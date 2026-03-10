@@ -19,13 +19,9 @@ def _max_headers() -> dict:
     }
 
 
-def send_max_notification(max_chat_id: str, message: str, buttons: Optional[list] = None) -> None:
-    """
-    Отправка сообщения в MAX.
-    Получатель передается через query-параметр chat_id.
-    """
+def send_max_notification(max_user_id: str, message: str, buttons: Optional[list] = None) -> None:
     if not config.MAX_BOT_TOKEN:
-        print(f"[MAX disabled -> {max_chat_id}] {message}")
+        print(f"[MAX disabled -> {max_user_id}] {message}")
         return
 
     payload = {
@@ -47,21 +43,18 @@ def send_max_notification(max_chat_id: str, message: str, buttons: Optional[list
         response = requests.post(
             f"{config.MAX_API_BASE}/messages",
             headers=_max_headers(),
-            params={"chat_id": max_chat_id},
+            params={"user_id": max_user_id},
             json=payload,
             timeout=15,
         )
         response.raise_for_status()
     except Exception as exc:
-        print(f"[MAX send error] chat_id={max_chat_id} error={exc}")
+        print(f"[MAX send error] user_id={max_user_id} error={exc}")
         if response is not None:
             print(f"[MAX send error body] {response.text}")
 
 
 def answer_callback(callback_id: str, text: str, notification: bool = False) -> None:
-    """
-    Ответ на callback-кнопку.
-    """
     if not config.MAX_BOT_TOKEN or not callback_id:
         return
 
