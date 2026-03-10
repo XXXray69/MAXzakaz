@@ -4,19 +4,79 @@ import secrets
 from datetime import datetime, timedelta
 from typing import Optional
 
-from sqlalchemy import and_, func
+import requests
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 import config
 from models import BonusLedger, BroadcastLog, Client, Policy, WithdrawalRequest
 
 
-def send_max_notification(max_chat_id: str, message: str) -> None:
-    """Заглушка отправки сообщений в MAX.
+def _max_headers() -> dict:
+    return {
+        "Authorization": config.MAX_BOT_TOKEN,
+        "Content-Type": "application/json",
+    }
 
-    Для реального проекта сюда подключается HTTP API MAX.
+
+def send_max_notification(max_chat_id: str, message: str, buttons: Optional[list] = None) -> None:
     """
-    print(f"[MAX -> {max_chat_id}] {message}")
+    Отправка сообщения в MAX через platform-api.max.ru/messages
+    """
+    if not config.MAX_BOT_TOKEN:
+        print(f"[MAX disabled -> {max_chat_id}] {message}")
+        return
+
+    payload = {
+        "chat_id": max_chat_id,
+        "text": message,
+    }
+
+    if buttons:
+        payload["attachments"] = [
+            {
+                "type": "inline_keyboard",
+                "payload": {
+                    "buttons": buttons
+                },
+            }
+        ]
+
+    try:
+        response = requests.post(
+            f"{config.MAX_API_BASE}/messages",
+            headers=_max_headers(),
+            json=payload,
+            timeout=15,
+        )
+        response.raise_for_status()
+    except Exception as exc:
+        print(f"[MAX send error] chat_id={max_chat_id} error={exc}")
+
+
+def answer_callback(callback_id: str, text: str, notification: bool = False) -> None:
+    """
+    Ответ на callback-кнопку.
+    """
+    if not config.MAX_BOT_TOKEN:
+        return
+
+    payload = {
+        "callback_id": callback_id,
+        "text": text,
+        "notification": notification,
+    }
+
+    try:
+        response = requests.post(
+            f"{config.MAX_API_BASE}/messages/callback",
+            headers=_max_headers(),
+            json=payload,
+            timeout=15,
+        )
+        response.raise_for_status()
+    except Exception as exc:
+        print(f"[MAX callback answer error] callback_id={callback_id} error={exc}")
 
 
 def generate_referral_code() -> str:
@@ -27,7 +87,28 @@ def generate_referral_link(client: Client) -> str:
     return f"https://max.ru/{config.MAX_BOT_USERNAME}?start={client.referral_code}"
 
 
-def get_or_create_client(db: Session, max_chat_id: str, name: str = "Unknown", referral_code: Optional[str] = None) -> Client:
+def get_main_menu_buttons() -> list:
+    return [
+        [
+            {"type": "message", "text": "Баланс", "payload": "Баланс"},
+            {"type": "message", "text": "Уровень", "payload": "Уровень"},
+        ],
+        [
+            {"type": "message", "text": "Реферал", "payload": "Реферал"},
+            {"type": "message", "text": "Вывод 1000", "payload": "Вывод 1000"},
+        ],
+        [
+            {"type": "message", "text": "Помощь", "payload": "Помощь"},
+        ],
+    ]
+
+
+def get_or_create_client(
+    db: Session,
+    max_chat_id: str,
+    name: str = "Unknown",
+    referral_code: Optional[str] = None,
+) -> Client:
     client = db.query(Client).filter(Client.max_chat_id == max_chat_id).first()
     if client:
         if name and client.name != name:
@@ -59,7 +140,7 @@ def get_or_create_client(db: Session, max_chat_id: str, name: str = "Unknown", r
 
 def _sum_active_bonus(db: Session, client_id: int) -> float:
     now = datetime.utcnow()
-    earned = (
+    total = (
         db.query(func.coalesce(func.sum(BonusLedger.amount), 0.0))
         .filter(
             BonusLedger.client_id == client_id,
@@ -68,7 +149,7 @@ def _sum_active_bonus(db: Session, client_id: int) -> float:
         )
         .scalar()
     )
-    return round(float(earned or 0.0), 2)
+    return round(float(total or 0.0), 2)
 
 
 def get_client_balance(db: Session, client_id: int) -> float:
@@ -79,7 +160,11 @@ def _spent_for_period(db: Session, client_id: int) -> float:
     since = datetime.utcnow() - timedelta(days=config.LOYALTY_PERIOD_DAYS)
     total = (
         db.query(func.coalesce(func.sum(Policy.premium_amount), 0.0))
-        .filter(Policy.client_id == client_id, Policy.created_at >= since, Policy.status == "ACTIVE")
+        .filter(
+            Policy.client_id == client_id,
+            Policy.created_at >= since,
+            Policy.status == "ACTIVE",
+        )
         .scalar()
     )
     return float(total or 0.0)
@@ -242,6 +327,8 @@ def create_broadcast(db: Session, title: str, message: str, only_with_referrals:
     if only_with_referrals:
         query = query.filter(Client.referred_by_id.isnot(None))
 
+    buttons = get_main_menu_buttons()
     for client in query.all():
-        send_max_notification(client.max_chat_id, message)
+        send_max_notification(client.max_chat_id, message, buttons=buttons)
     return item.id
+
