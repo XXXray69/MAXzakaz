@@ -1,0 +1,50 @@
+from __future__ import annotations
+
+import os
+from typing import Dict
+
+APP_BASE_URL = os.getenv("APP_BASE_URL", "https://example.com")
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./loyalty_system.db")
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "change-me")
+MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN", "")
+MAX_BOT_USERNAME = os.getenv("MAX_BOT_USERNAME", "your_bot")
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "secret")
+
+CASHBACK_THRESHOLD = float(os.getenv("CASHBACK_THRESHOLD", "1000"))
+LOYALTY_PERIOD_DAYS = int(os.getenv("LOYALTY_PERIOD_DAYS", "365"))
+
+POLICY_BONUS_RATES: Dict[str, float] = {
+    "OSAGO": 0.01,
+    "KASKO": 0.05,
+    "MORTGAGE": 0.03,
+    "PROPERTY": 0.04,
+    "LIFE": 0.03,
+    "TRAVEL": 0.02,
+}
+
+REFERRAL_BONUS_RATES: Dict[str, float] = {
+    "OSAGO": 0.01,
+    "KASKO": 0.05,
+    "MORTGAGE": 0.03,
+    "PROPERTY": 0.04,
+    "LIFE": 0.03,
+    "TRAVEL": 0.02,
+}
+
+VOLUNTARY_POLICY_TYPES = {"KASKO", "MORTGAGE", "PROPERTY", "LIFE", "TRAVEL"}
+
+LOYALTY_TIERS = {
+    "BRONZE": {"min_spent": 0.0},
+    "SILVER": {"min_spent": 50000.0},
+    "GOLD": {"min_spent": 150000.0},
+    "VIP": {"min_spent": 400000.0},
+}
+
+MESSAGE_HELP = (
+    "Команды:\n"
+    "Баланс — показать активные бонусы\n"
+    "Уровень — показать уровень лояльности\n"
+    "Реферал — получить ссылку\n"
+    "Вывод 1000 — заявка на вывод при достаточном балансе\n"
+    "Помощь — показать команды"
+)
