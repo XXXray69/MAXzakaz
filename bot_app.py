@@ -55,12 +55,6 @@ class BroadcastIn(BaseModel):
     only_with_referrals: bool = False
 
 
-class MaxWebhookPayload(BaseModel):
-    update_type: Optional[str] = None
-    message: Optional[dict[str, Any]] = None
-    callback: Optional[dict[str, Any]] = None
-
-
 def require_admin(authorization: str = Header(default="")) -> None:
     expected = f"Bearer {config.ADMIN_TOKEN}"
     if authorization != expected:
@@ -70,7 +64,11 @@ def require_admin(authorization: str = Header(default="")) -> None:
 def extract_message_data(payload: dict[str, Any]) -> tuple[str, str, str, Optional[str]]:
     message = payload.get("message") or {}
     sender = message.get("sender") or {}
-    chat_id = str(message.get("chat_id") or sender.get("chat_id") or sender.get("user_id") or "")
+
+    user_id = sender.get("user_id")
+    chat_id = message.get("chat_id")
+
+    target_id = str(user_id or chat_id or "")
     user_name = sender.get("name") or sender.get("username") or "Unknown"
     text = (message.get("text") or "").strip()
 
@@ -78,18 +76,23 @@ def extract_message_data(payload: dict[str, Any]) -> tuple[str, str, str, Option
     if payload.get("update_type") == "bot_started":
         start_payload = payload.get("start_payload") or message.get("start_payload")
 
-    return chat_id, user_name, text, start_payload
+    return target_id, user_name, text, start_payload
 
 
 def extract_callback_data(payload: dict[str, Any]) -> tuple[str, str, str, str]:
     callback = payload.get("callback") or {}
     message = callback.get("message") or {}
     sender = callback.get("sender") or {}
+
     callback_id = str(callback.get("callback_id") or "")
     callback_payload = str(callback.get("payload") or "")
-    chat_id = str(message.get("chat_id") or sender.get("chat_id") or sender.get("user_id") or "")
+
+    user_id = sender.get("user_id")
+    chat_id = message.get("chat_id")
+    target_id = str(user_id or chat_id or "")
+
     user_name = sender.get("name") or sender.get("username") or "Unknown"
-    return callback_id, callback_payload, chat_id, user_name
+    return callback_id, callback_payload, target_id, user_name
 
 
 def build_reply_for_text(db: Session, client: Client, text: str) -> str:
@@ -137,32 +140,43 @@ def root():
 
 
 @app.post("/webhook")
-def webhook(payload: dict[str, Any], db: Session = Depends(get_db)):
+def webhook(
+    payload: dict[str, Any],
+    x_max_bot_api_secret: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    if config.WEBHOOK_SECRET and x_max_bot_api_secret != config.WEBHOOK_SECRET:
+        raise HTTPException(status_code=403, detail="Invalid webhook secret")
+
     update_type = payload.get("update_type")
 
     if update_type == "message_callback":
-        callback_id, callback_payload, chat_id, user_name = extract_callback_data(payload)
-        client = get_or_create_client(db, chat_id, user_name)
+        callback_id, callback_payload, target_id, user_name = extract_callback_data(payload)
 
+        if not target_id:
+            return {"status": "ignored", "reason": "target_id not found"}
+
+        client = get_or_create_client(db, target_id, user_name)
         reply = build_reply_for_text(db, client, callback_payload)
+
         if callback_id:
             answer_callback(callback_id, "Обрабатываю")
-        send_max_notification(chat_id, reply, buttons=get_main_menu_buttons())
 
+        send_max_notification(target_id, reply, buttons=get_main_menu_buttons())
         return {"status": "ok", "kind": "callback", "reply": reply}
 
-    chat_id, user_name, text, start_payload = extract_message_data(payload)
+    target_id, user_name, text, start_payload = extract_message_data(payload)
 
-    if not chat_id:
-        return {"status": "ignored", "reason": "chat_id not found"}
+    if not target_id:
+        return {"status": "ignored", "reason": "target_id not found"}
 
-    client = get_or_create_client(db, chat_id, user_name, start_payload)
+    client = get_or_create_client(db, target_id, user_name, start_payload)
 
     if not text:
         text = "/start"
 
     reply = build_reply_for_text(db, client, text)
-    send_max_notification(chat_id, reply, buttons=get_main_menu_buttons())
+    send_max_notification(target_id, reply, buttons=get_main_menu_buttons())
 
     return {"status": "ok", "kind": "message", "reply": reply}
 
@@ -213,7 +227,10 @@ def admin_apply_discount(payload: DiscountIn, db: Session = Depends(get_db)):
         buttons=get_main_menu_buttons(),
     )
 
-    return {"applied_amount": amount, "balance": get_client_balance(db, client.id)}
+    return {
+        "applied_amount": amount,
+        "balance": get_client_balance(db, client.id),
+    }
 
 
 @app.post("/admin/withdrawals", dependencies=[Depends(require_admin)])
@@ -247,10 +264,15 @@ def admin_pending_withdrawals(db: Session = Depends(get_db)):
 @app.post("/admin/withdrawals/{request_id}/approve", dependencies=[Depends(require_admin)])
 def admin_approve_withdrawal(request_id: int, db: Session = Depends(get_db)):
     req = approve_withdrawal(db, request_id)
-    return {"request_id": req.id, "status": req.status, "processed_at": req.processed_at.isoformat()}
+    return {
+        "request_id": req.id,
+        "status": req.status,
+        "processed_at": req.processed_at.isoformat(),
+    }
 
 
 @app.post("/admin/broadcasts", dependencies=[Depends(require_admin)])
 def admin_broadcast(payload: BroadcastIn, db: Session = Depends(get_db)):
     log_id = create_broadcast(db, payload.title, payload.message, payload.only_with_referrals)
     return {"broadcast_id": log_id}
+
