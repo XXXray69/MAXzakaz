@@ -21,14 +21,14 @@ def _max_headers() -> dict:
 
 def send_max_notification(max_chat_id: str, message: str, buttons: Optional[list] = None) -> None:
     """
-    Отправка сообщения в MAX через platform-api.max.ru/messages
+    Отправка сообщения в MAX.
+    Получатель передается через query-параметр chat_id.
     """
     if not config.MAX_BOT_TOKEN:
         print(f"[MAX disabled -> {max_chat_id}] {message}")
         return
 
     payload = {
-        "chat_id": max_chat_id,
         "text": message,
     }
 
@@ -42,23 +42,27 @@ def send_max_notification(max_chat_id: str, message: str, buttons: Optional[list
             }
         ]
 
+    response = None
     try:
         response = requests.post(
             f"{config.MAX_API_BASE}/messages",
             headers=_max_headers(),
+            params={"chat_id": max_chat_id},
             json=payload,
             timeout=15,
         )
         response.raise_for_status()
     except Exception as exc:
         print(f"[MAX send error] chat_id={max_chat_id} error={exc}")
+        if response is not None:
+            print(f"[MAX send error body] {response.text}")
 
 
 def answer_callback(callback_id: str, text: str, notification: bool = False) -> None:
     """
     Ответ на callback-кнопку.
     """
-    if not config.MAX_BOT_TOKEN:
+    if not config.MAX_BOT_TOKEN or not callback_id:
         return
 
     payload = {
@@ -67,6 +71,7 @@ def answer_callback(callback_id: str, text: str, notification: bool = False) -> 
         "notification": notification,
     }
 
+    response = None
     try:
         response = requests.post(
             f"{config.MAX_API_BASE}/messages/callback",
@@ -77,6 +82,8 @@ def answer_callback(callback_id: str, text: str, notification: bool = False) -> 
         response.raise_for_status()
     except Exception as exc:
         print(f"[MAX callback answer error] callback_id={callback_id} error={exc}")
+        if response is not None:
+            print(f"[MAX callback answer body] {response.text}")
 
 
 def generate_referral_code() -> str:
@@ -114,6 +121,7 @@ def get_or_create_client(
         if name and client.name != name:
             client.name = name
             db.commit()
+            db.refresh(client)
         return client
 
     code = generate_referral_code()
@@ -182,10 +190,12 @@ def update_client_tier(db: Session, client_id: int) -> str:
     client = db.get(Client, client_id)
     if not client:
         raise ValueError("Клиент не найден")
+
     spent = _spent_for_period(db, client_id)
     client.total_spent_last_period = spent
     client.loyalty_level = get_loyalty_level(spent)
     db.commit()
+    db.refresh(client)
     return client.loyalty_level
 
 
@@ -199,6 +209,7 @@ def register_policy(
     referral_source_client_id: Optional[int] = None,
 ) -> Policy:
     policy_type = policy_type.upper()
+
     if end_date <= start_date:
         raise ValueError("Дата окончания должна быть позже даты начала")
     if premium_amount <= 0:
@@ -257,6 +268,7 @@ def register_policy(
 
 def apply_discount_to_policy(db: Session, client_id: int, target_policy_type: str, requested_amount: float) -> float:
     policy_type = target_policy_type.upper()
+
     if policy_type not in config.VOLUNTARY_POLICY_TYPES:
         raise ValueError("Бонусы можно списывать только на добровольные виды страхования")
     if requested_amount <= 0:
@@ -264,6 +276,7 @@ def apply_discount_to_policy(db: Session, client_id: int, target_policy_type: st
 
     balance = get_client_balance(db, client_id)
     amount = min(balance, requested_amount)
+
     if amount <= 0:
         return 0.0
 
@@ -284,6 +297,7 @@ def apply_discount_to_policy(db: Session, client_id: int, target_policy_type: st
 def request_withdrawal(db: Session, client_id: int, amount: float) -> WithdrawalRequest:
     if amount < config.CASHBACK_THRESHOLD:
         raise ValueError(f"Минимальный порог вывода {config.CASHBACK_THRESHOLD:.0f} руб.")
+
     balance = get_client_balance(db, client_id)
     if amount > balance:
         raise ValueError("Недостаточно бонусов для вывода")
@@ -298,7 +312,12 @@ def request_withdrawal(db: Session, client_id: int, amount: float) -> Withdrawal
             expires_at=None,
         )
     )
-    request = WithdrawalRequest(client_id=client_id, amount=round(amount, 2), status="PENDING")
+
+    request = WithdrawalRequest(
+        client_id=client_id,
+        amount=round(amount, 2),
+        status="PENDING",
+    )
     db.add(request)
     db.commit()
     db.refresh(request)
@@ -311,6 +330,7 @@ def approve_withdrawal(db: Session, request_id: int) -> WithdrawalRequest:
         raise ValueError("Заявка не найдена")
     if req.status != "PENDING":
         raise ValueError("Заявка уже обработана")
+
     req.status = "APPROVED"
     req.processed_at = datetime.utcnow()
     db.commit()
@@ -319,9 +339,14 @@ def approve_withdrawal(db: Session, request_id: int) -> WithdrawalRequest:
 
 
 def create_broadcast(db: Session, title: str, message: str, only_with_referrals: bool = False) -> int:
-    item = BroadcastLog(title=title, message=message, only_with_referrals=only_with_referrals)
+    item = BroadcastLog(
+        title=title,
+        message=message,
+        only_with_referrals=only_with_referrals,
+    )
     db.add(item)
     db.commit()
+    db.refresh(item)
 
     query = db.query(Client)
     if only_with_referrals:
@@ -330,5 +355,7 @@ def create_broadcast(db: Session, title: str, message: str, only_with_referrals:
     buttons = get_main_menu_buttons()
     for client in query.all():
         send_max_notification(client.max_chat_id, message, buttons=buttons)
+
     return item.id
+
 
