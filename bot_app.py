@@ -276,3 +276,4 @@ def admin_broadcast(payload: BroadcastIn, db: Session = Depends(get_db)):
     log_id = create_broadcast(db, payload.title, payload.message, payload.only_with_referrals)
     return {"broadcast_id": log_id}
 
+
