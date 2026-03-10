@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
@@ -9,11 +9,13 @@ from sqlalchemy.orm import Session
 
 import config
 from bonus_service import (
+    answer_callback,
     approve_withdrawal,
     apply_discount_to_policy,
     create_broadcast,
     generate_referral_link,
     get_client_balance,
+    get_main_menu_buttons,
     get_or_create_client,
     register_policy,
     request_withdrawal,
@@ -24,13 +26,6 @@ from models import Client, WithdrawalRequest, get_db, initialize_db
 
 app = FastAPI(title="MAX Loyalty Bot")
 initialize_db()
-
-
-class MaxIncomingMessage(BaseModel):
-    chat_id: str
-    user_name: str = "Unknown"
-    text: str
-    start_payload: Optional[str] = None
 
 
 class PolicyIn(BaseModel):
@@ -60,8 +55,10 @@ class BroadcastIn(BaseModel):
     only_with_referrals: bool = False
 
 
-class StartWebhookIn(BaseModel):
-    webhook_url: str
+class MaxWebhookPayload(BaseModel):
+    update_type: Optional[str] = None
+    message: Optional[dict[str, Any]] = None
+    callback: Optional[dict[str, Any]] = None
 
 
 def require_admin(authorization: str = Header(default="")) -> None:
@@ -70,56 +67,111 @@ def require_admin(authorization: str = Header(default="")) -> None:
         raise HTTPException(status_code=401, detail="Неверный ADMIN_TOKEN")
 
 
+def extract_message_data(payload: dict[str, Any]) -> tuple[str, str, str, Optional[str]]:
+    message = payload.get("message") or {}
+    sender = message.get("sender") or {}
+    chat_id = str(message.get("chat_id") or sender.get("chat_id") or sender.get("user_id") or "")
+    user_name = sender.get("name") or sender.get("username") or "Unknown"
+    text = (message.get("text") or "").strip()
+
+    start_payload = None
+    if payload.get("update_type") == "bot_started":
+        start_payload = payload.get("start_payload") or message.get("start_payload")
+
+    return chat_id, user_name, text, start_payload
+
+
+def extract_callback_data(payload: dict[str, Any]) -> tuple[str, str, str, str]:
+    callback = payload.get("callback") or {}
+    message = callback.get("message") or {}
+    sender = callback.get("sender") or {}
+    callback_id = str(callback.get("callback_id") or "")
+    callback_payload = str(callback.get("payload") or "")
+    chat_id = str(message.get("chat_id") or sender.get("chat_id") or sender.get("user_id") or "")
+    user_name = sender.get("name") or sender.get("username") or "Unknown"
+    return callback_id, callback_payload, chat_id, user_name
+
+
+def build_reply_for_text(db: Session, client: Client, text: str) -> str:
+    text_lower = text.strip().lower()
+
+    if text_lower in {"/start", "start", "меню"}:
+        return (
+            f"Здравствуйте, {client.name}.\n"
+            f"Вы подключены к программе лояльности.\n"
+            f"Ваш уровень: {client.loyalty_level}\n\n"
+            f"{config.MESSAGE_HELP}"
+        )
+
+    if text_lower == "баланс":
+        return f"Ваш активный бонусный баланс: {get_client_balance(db, client.id):.2f} руб."
+
+    if text_lower == "уровень":
+        update_client_tier(db, client.id)
+        db.refresh(client)
+        return (
+            f"Ваш уровень: {client.loyalty_level}.\n"
+            f"Сумма оформленных полисов за период: {client.total_spent_last_period:.2f} руб."
+        )
+
+    if text_lower in {"реферал", "/refer"}:
+        return f"Ваша реферальная ссылка: {generate_referral_link(client)}"
+
+    if text_lower.startswith("вывод"):
+        try:
+            amount = float(text.split()[1])
+            req = request_withdrawal(db, client.id, amount)
+            return f"Заявка на вывод #{req.id} создана на сумму {req.amount:.2f} руб."
+        except Exception as exc:
+            return f"Ошибка: {exc}"
+
+    if text_lower == "помощь":
+        return config.MESSAGE_HELP
+
+    return "Команда не распознана.\n" + config.MESSAGE_HELP
+
+
 @app.get("/")
 def root():
     return {"status": "ok", "service": "MAX loyalty bot"}
 
 
 @app.post("/webhook")
-def webhook(message: MaxIncomingMessage, db: Session = Depends(get_db)):
-    client = get_or_create_client(db, message.chat_id, message.user_name, message.start_payload)
-    text = message.text.strip()
-    text_lower = text.lower()
+def webhook(payload: dict[str, Any], db: Session = Depends(get_db)):
+    update_type = payload.get("update_type")
 
-    if text_lower in {"/start", "start"}:
-        reply = (
-            f"Здравствуйте, {client.name}. Вы подключены к программе лояльности.\n"
-            f"Ваш уровень: {client.loyalty_level}\n"
-            f"{config.MESSAGE_HELP}"
-        )
-    elif text_lower == "баланс":
-        reply = f"Ваш активный бонусный баланс: {get_client_balance(db, client.id):.2f} руб."
-    elif text_lower == "уровень":
-        update_client_tier(db, client.id)
-        db.refresh(client)
-        reply = (
-            f"Ваш уровень: {client.loyalty_level}.\n"
-            f"Сумма оформленных полисов за период: {client.total_spent_last_period:.2f} руб."
-        )
-    elif text_lower in {"реферал", "/refer"}:
-        reply = f"Ваша реферальная ссылка: {generate_referral_link(client)}"
-    elif text_lower.startswith("вывод"):
-        try:
-            amount = float(text.split()[1])
-            req = request_withdrawal(db, client.id, amount)
-            reply = f"Заявка на вывод #{req.id} создана на сумму {req.amount:.2f} руб."
-        except Exception as exc:
-            reply = f"Ошибка: {exc}"
-    elif text_lower == "помощь":
-        reply = config.MESSAGE_HELP
-    else:
-        reply = "Команда не распознана.\n" + config.MESSAGE_HELP
+    if update_type == "message_callback":
+        callback_id, callback_payload, chat_id, user_name = extract_callback_data(payload)
+        client = get_or_create_client(db, chat_id, user_name)
 
-    send_max_notification(client.max_chat_id, reply)
-    return {"status": "ok", "reply": reply}
+        reply = build_reply_for_text(db, client, callback_payload)
+        if callback_id:
+            answer_callback(callback_id, "Обрабатываю")
+        send_max_notification(chat_id, reply, buttons=get_main_menu_buttons())
+
+        return {"status": "ok", "kind": "callback", "reply": reply}
+
+    chat_id, user_name, text, start_payload = extract_message_data(payload)
+
+    if not chat_id:
+        return {"status": "ignored", "reason": "chat_id not found"}
+
+    client = get_or_create_client(db, chat_id, user_name, start_payload)
+
+    if not text:
+        text = "/start"
+
+    reply = build_reply_for_text(db, client, text)
+    send_max_notification(chat_id, reply, buttons=get_main_menu_buttons())
+
+    return {"status": "ok", "kind": "message", "reply": reply}
 
 
 @app.post("/admin/policies", dependencies=[Depends(require_admin)])
 def admin_register_policy(payload: PolicyIn, db: Session = Depends(get_db)):
     client = get_or_create_client(db, payload.client_chat_id, payload.client_name, payload.referral_code)
-    referral_source_client_id = None
-    if client.referred_by_id:
-        referral_source_client_id = client.referred_by_id
+    referral_source_client_id = client.referred_by_id if client.referred_by_id else None
+
     policy = register_policy(
         db=db,
         client_id=client.id,
@@ -129,7 +181,19 @@ def admin_register_policy(payload: PolicyIn, db: Session = Depends(get_db)):
         end_date=payload.end_date,
         referral_source_client_id=referral_source_client_id,
     )
+
     balance = get_client_balance(db, client.id)
+
+    send_max_notification(
+        client.max_chat_id,
+        (
+            f"Вам начислен бонус за полис {payload.policy_type.upper()}.\n"
+            f"Сумма бонуса: {policy.bonus_amount:.2f} руб.\n"
+            f"Текущий баланс: {balance:.2f} руб."
+        ),
+        buttons=get_main_menu_buttons(),
+    )
+
     return {
         "policy_id": policy.id,
         "bonus_amount": policy.bonus_amount,
@@ -142,6 +206,13 @@ def admin_register_policy(payload: PolicyIn, db: Session = Depends(get_db)):
 def admin_apply_discount(payload: DiscountIn, db: Session = Depends(get_db)):
     client = get_or_create_client(db, payload.client_chat_id)
     amount = apply_discount_to_policy(db, client.id, payload.target_policy_type, payload.amount)
+
+    send_max_notification(
+        client.max_chat_id,
+        f"С вашего бонусного счёта списано {amount:.2f} руб. на оформление полиса {payload.target_policy_type.upper()}.",
+        buttons=get_main_menu_buttons(),
+    )
+
     return {"applied_amount": amount, "balance": get_client_balance(db, client.id)}
 
 
@@ -149,6 +220,13 @@ def admin_apply_discount(payload: DiscountIn, db: Session = Depends(get_db)):
 def admin_create_withdrawal(payload: WithdrawalIn, db: Session = Depends(get_db)):
     client = get_or_create_client(db, payload.client_chat_id)
     req = request_withdrawal(db, client.id, payload.amount)
+
+    send_max_notification(
+        client.max_chat_id,
+        f"Ваша заявка на вывод #{req.id} создана на сумму {req.amount:.2f} руб.",
+        buttons=get_main_menu_buttons(),
+    )
+
     return {"request_id": req.id, "status": req.status, "amount": req.amount}
 
 
