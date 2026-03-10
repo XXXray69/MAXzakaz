@@ -28,8 +28,19 @@ class Client(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
     referred_by = relationship("Client", remote_side=[id])
-    policies = relationship("Policy", back_populates="client", cascade="all, delete-orphan")
-    bonuses = relationship("BonusLedger", back_populates="client", cascade="all, delete-orphan")
+
+    policies = relationship(
+        "Policy",
+        foreign_keys="Policy.client_id",
+        back_populates="client",
+        cascade="all, delete-orphan",
+    )
+
+    bonuses = relationship(
+        "BonusLedger",
+        back_populates="client",
+        cascade="all, delete-orphan",
+    )
 
 
 class Policy(Base):
@@ -47,7 +58,16 @@ class Policy(Base):
     bonus_amount = Column(Float, nullable=False, default=0.0)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
-    client = relationship("Client", foreign_keys=[client_id], back_populates="policies")
+    client = relationship(
+        "Client",
+        foreign_keys=[client_id],
+        back_populates="policies",
+    )
+
+    referral_source_client = relationship(
+        "Client",
+        foreign_keys=[referral_source_client_id],
+    )
 
 
 class BonusLedger(Base):
@@ -98,3 +118,4 @@ def get_db():
         yield db
     finally:
         db.close()
+
