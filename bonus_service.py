@@ -24,10 +24,10 @@ def send_max_notification(max_user_id: str, message: str, buttons: Optional[list
         print(f"[MAX disabled -> {max_user_id}] {message}")
         return
 
-    payload = {"text": message}
+    body = {"text": message}
 
     if buttons:
-        payload["attachments"] = [
+        body["attachments"] = [
             {
                 "type": "inline_keyboard",
                 "payload": {
@@ -42,7 +42,7 @@ def send_max_notification(max_user_id: str, message: str, buttons: Optional[list
             f"{config.MAX_API_BASE}/messages",
             headers=_max_headers(),
             params={"user_id": max_user_id},
-            json=payload,
+            json=body,
             timeout=15,
         )
         response.raise_for_status()
@@ -56,18 +56,16 @@ def answer_callback(callback_id: str, text: str, notification: bool = False) -> 
     if not config.MAX_BOT_TOKEN or not callback_id:
         return
 
-    payload = {
-        "callback_id": callback_id,
-        "text": text,
-        "notification": notification,
-    }
-
     response = None
     try:
         response = requests.post(
             f"{config.MAX_API_BASE}/messages/callback",
             headers=_max_headers(),
-            json=payload,
+            json={
+                "callback_id": callback_id,
+                "text": text,
+                "notification": notification,
+            },
             timeout=15,
         )
         response.raise_for_status()
@@ -95,24 +93,24 @@ def generate_referral_link(client: Client) -> str:
 def get_main_menu_buttons() -> list:
     return [
         [
-            {"type": "callback", "text": "Баланс", "payload": "ACTION_BALANCE"},
-            {"type": "callback", "text": "Уровень", "payload": "ACTION_LEVEL"},
+            {"type": "callback", "text": "Баланс", "payload": "BALANCE"},
+            {"type": "callback", "text": "Уровень", "payload": "LEVEL"},
         ],
         [
-            {"type": "callback", "text": "Реферал", "payload": "ACTION_REFERRAL"},
-            {"type": "callback", "text": "Вывод 1000", "payload": "ACTION_WITHDRAW_1000"},
+            {"type": "callback", "text": "Реферал", "payload": "REFERRAL"},
+            {"type": "callback", "text": "Вывод 1000", "payload": "WITHDRAW_1000"},
         ],
         [
-            {"type": "callback", "text": "Тарифы", "payload": "ACTION_PRODUCTS"},
-            {"type": "callback", "text": "Связаться", "payload": "ACTION_CONTACT_MANAGER"},
+            {"type": "callback", "text": "Тарифы", "payload": "PRODUCTS"},
+            {"type": "callback", "text": "Связаться", "payload": "CONTACT_MANAGER"},
         ],
         [
-            {"type": "callback", "text": "Помощь", "payload": "ACTION_HELP"},
+            {"type": "callback", "text": "Помощь", "payload": "HELP"},
         ],
     ]
 
 
-def get_products_menu_buttons() -> list:
+def get_products_buttons() -> list:
     return [
         [
             {"type": "callback", "text": "ОСАГО", "payload": "PRODUCT_OSAGO"},
@@ -127,9 +125,13 @@ def get_products_menu_buttons() -> list:
             {"type": "callback", "text": "Путешествия", "payload": "PRODUCT_TRAVEL"},
         ],
         [
-            {"type": "callback", "text": "Назад", "payload": "ACTION_MENU"},
+            {"type": "callback", "text": "Назад", "payload": "BACK_MAIN"},
         ],
     ]
+
+
+def get_back_to_main_buttons() -> list:
+    return [[{"type": "callback", "text": "Назад", "payload": "BACK_MAIN"}]]
 
 
 def get_or_create_client(
@@ -190,11 +192,7 @@ def _spent_for_period(db: Session, client_id: int) -> float:
     since = datetime.utcnow() - timedelta(days=config.LOYALTY_PERIOD_DAYS)
     total = (
         db.query(func.coalesce(func.sum(Policy.premium_amount), 0.0))
-        .filter(
-            Policy.client_id == client_id,
-            Policy.created_at >= since,
-            Policy.status == "ACTIVE",
-        )
+        .filter(Policy.client_id == client_id, Policy.created_at >= since, Policy.status == "ACTIVE")
         .scalar()
     )
     return float(total or 0.0)
@@ -221,101 +219,6 @@ def update_client_tier(db: Session, client_id: int) -> str:
     return client.loyalty_level
 
 
-def register_policy(
-    db: Session,
-    client_id: int,
-    policy_type: str,
-    premium_amount: float,
-    start_date: datetime,
-    end_date: datetime,
-    referral_source_client_id: Optional[int] = None,
-) -> Policy:
-    policy_type = policy_type.upper()
-
-    if end_date <= start_date:
-        raise ValueError("Дата окончания должна быть позже даты начала")
-    if premium_amount <= 0:
-        raise ValueError("Сумма полиса должна быть больше нуля")
-
-    rate = config.POLICY_BONUS_RATES.get(policy_type, 0.0)
-    bonus_amount = round(premium_amount * rate, 2)
-
-    policy = Policy(
-        client_id=client_id,
-        policy_type=policy_type,
-        premium_amount=premium_amount,
-        start_date=start_date,
-        end_date=end_date,
-        referral_source_client_id=referral_source_client_id,
-        bonus_rate=rate,
-        bonus_amount=bonus_amount,
-    )
-    db.add(policy)
-    db.flush()
-
-    if bonus_amount > 0:
-        db.add(
-            BonusLedger(
-                client_id=client_id,
-                amount=bonus_amount,
-                entry_type="POLICY_BONUS",
-                description=f"Бонус за полис {policy_type}",
-                available_from=start_date,
-                expires_at=end_date,
-                policy_id=policy.id,
-            )
-        )
-
-    if referral_source_client_id:
-        ref_rate = config.REFERRAL_BONUS_RATES.get(policy_type, 0.0)
-        ref_bonus = round(premium_amount * ref_rate, 2)
-        if ref_bonus > 0:
-            db.add(
-                BonusLedger(
-                    client_id=referral_source_client_id,
-                    amount=ref_bonus,
-                    entry_type="REFERRAL_BONUS",
-                    description=f"Реферальный бонус за полис {policy_type}",
-                    available_from=start_date,
-                    expires_at=end_date,
-                    policy_id=policy.id,
-                )
-            )
-
-    db.commit()
-    db.refresh(policy)
-    update_client_tier(db, client_id)
-    return policy
-
-
-def apply_discount_to_policy(db: Session, client_id: int, target_policy_type: str, requested_amount: float) -> float:
-    policy_type = target_policy_type.upper()
-
-    if policy_type not in config.VOLUNTARY_POLICY_TYPES:
-        raise ValueError("Бонусы можно списывать только на добровольные виды страхования")
-    if requested_amount <= 0:
-        raise ValueError("Сумма списания должна быть больше нуля")
-
-    balance = get_client_balance(db, client_id)
-    amount = min(balance, requested_amount)
-
-    if amount <= 0:
-        return 0.0
-
-    db.add(
-        BonusLedger(
-            client_id=client_id,
-            amount=-round(amount, 2),
-            entry_type="DISCOUNT_APPLIED",
-            description=f"Списание бонусов на полис {policy_type}",
-            available_from=datetime.utcnow(),
-            expires_at=None,
-        )
-    )
-    db.commit()
-    return round(amount, 2)
-
-
 def request_withdrawal(db: Session, client_id: int, amount: float) -> WithdrawalRequest:
     if amount < config.CASHBACK_THRESHOLD:
         raise ValueError(f"Минимальный порог вывода {config.CASHBACK_THRESHOLD:.0f} руб.")
@@ -335,11 +238,7 @@ def request_withdrawal(db: Session, client_id: int, amount: float) -> Withdrawal
         )
     )
 
-    request = WithdrawalRequest(
-        client_id=client_id,
-        amount=round(amount, 2),
-        status="PENDING",
-    )
+    request = WithdrawalRequest(client_id=client_id, amount=round(amount, 2), status="PENDING")
     db.add(request)
     db.commit()
     db.refresh(request)
@@ -361,11 +260,7 @@ def approve_withdrawal(db: Session, request_id: int) -> WithdrawalRequest:
 
 
 def create_broadcast(db: Session, title: str, message: str, only_with_referrals: bool = False) -> int:
-    item = BroadcastLog(
-        title=title,
-        message=message,
-        only_with_referrals=only_with_referrals,
-    )
+    item = BroadcastLog(title=title, message=message, only_with_referrals=only_with_referrals)
     db.add(item)
     db.commit()
     db.refresh(item)
@@ -374,11 +269,12 @@ def create_broadcast(db: Session, title: str, message: str, only_with_referrals:
     if only_with_referrals:
         query = query.filter(Client.referred_by_id.isnot(None))
 
-    buttons = get_main_menu_buttons()
     for client in query.all():
-        send_max_notification(client.max_chat_id, message, buttons=buttons)
+        send_max_notification(client.max_chat_id, message, buttons=get_main_menu_buttons())
 
     return item.id
+
+
 
 
 
