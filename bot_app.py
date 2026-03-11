@@ -17,6 +17,8 @@ from bonus_service import (
     get_client_balance,
     get_main_menu_buttons,
     get_or_create_client,
+    get_products_menu_buttons,
+    notify_owner,
     register_policy,
     request_withdrawal,
     send_max_notification,
@@ -95,43 +97,143 @@ def extract_callback_data(payload: dict[str, Any]) -> tuple[str, str, str, str]:
     return callback_id, callback_payload, target_id, user_name
 
 
-def build_reply_for_text(db: Session, client: Client, text: str) -> str:
-    text_lower = text.strip().lower()
+def build_welcome_text(client_name: str) -> str:
+    return (
+        f"Здравствуйте, {client_name}!\n\n"
+        f"Вы попали в Центр страхования.\n"
+        f"Здесь вы можете:\n"
+        f"— узнать бонусный баланс\n"
+        f"— получить реферальную ссылку\n"
+        f"— оставить заявку на вывод бонусов\n"
+        f"— выбрать интересующий вид страхования\n"
+        f"— передать запрос менеджеру\n\n"
+        f"Выберите нужное действие кнопками ниже."
+    )
 
-    if text_lower in {"/start", "start", "меню"}:
-        return (
-            f"Здравствуйте, {client.name}.\n"
-            f"Вы подключены к программе лояльности.\n"
-            f"Ваш уровень: {client.loyalty_level}\n\n"
-            f"{config.MESSAGE_HELP}"
-        )
 
-    if text_lower == "баланс":
-        return f"Ваш активный бонусный баланс: {get_client_balance(db, client.id):.2f} руб."
+def build_products_text() -> str:
+    return (
+        "Выберите интересующий вид страхования:\n"
+        "— ОСАГО\n"
+        "— КАСКО\n"
+        "— Ипотечное страхование\n"
+        "— Страхование имущества\n"
+        "— Страхование жизни\n"
+        "— Страхование путешествий"
+    )
 
-    if text_lower == "уровень":
+
+def build_reply_for_action(db: Session, client: Client, action: str) -> tuple[str, list]:
+    if action in {"/start", "start", "ACTION_START", "ACTION_MENU", "меню"}:
+        return build_welcome_text(client.name), get_main_menu_buttons()
+
+    if action in {"ACTION_HELP", "помощь"}:
+        return config.MESSAGE_HELP, get_main_menu_buttons()
+
+    if action in {"ACTION_BALANCE", "баланс"}:
+        return f"Ваш текущий бонусный баланс: {get_client_balance(db, client.id):.2f} руб.", get_main_menu_buttons()
+
+    if action in {"ACTION_LEVEL", "уровень"}:
         update_client_tier(db, client.id)
         db.refresh(client)
         return (
-            f"Ваш уровень: {client.loyalty_level}.\n"
-            f"Сумма оформленных полисов за период: {client.total_spent_last_period:.2f} руб."
+            f"Ваш уровень лояльности: {client.loyalty_level}.\n"
+            f"Сумма оформленных полисов за период: {client.total_spent_last_period:.2f} руб.",
+            get_main_menu_buttons(),
         )
 
-    if text_lower in {"реферал", "/refer"}:
-        return f"Ваша реферальная ссылка: {generate_referral_link(client)}"
+    if action in {"ACTION_REFERRAL", "реферал", "/refer"}:
+        return (
+            f"Ваша персональная реферальная ссылка:\n{generate_referral_link(client)}\n\n"
+            f"Отправьте её знакомым. Когда по вашей рекомендации оформят полис, вам начислится бонус.",
+            get_main_menu_buttons(),
+        )
 
-    if text_lower.startswith("вывод"):
+    if action in {"ACTION_WITHDRAW_1000", "вывод 1000"}:
         try:
-            amount = float(text.split()[1])
-            req = request_withdrawal(db, client.id, amount)
-            return f"Заявка на вывод #{req.id} создана на сумму {req.amount:.2f} руб."
+            req = request_withdrawal(db, client.id, 1000)
+            return (
+                f"Заявка на вывод #{req.id} создана на сумму {req.amount:.2f} руб.\n"
+                f"Менеджер свяжется с вами после проверки.",
+                get_main_menu_buttons(),
+            )
         except Exception as exc:
-            return f"Ошибка: {exc}"
+            return f"Не удалось создать заявку на вывод: {exc}", get_main_menu_buttons()
 
-    if text_lower == "помощь":
-        return config.MESSAGE_HELP
+    if action in {"ACTION_PRODUCTS", "тарифы"}:
+        return build_products_text(), get_products_menu_buttons()
 
-    return "Команда не распознана.\n" + config.MESSAGE_HELP
+    if action == "PRODUCT_OSAGO":
+        return (
+            f"{config.PRODUCT_TEXTS['OSAGO']}\n\n"
+            f"Если хотите оформить ОСАГО, нажмите «Связаться», и менеджер свяжется с вами.",
+            get_products_menu_buttons(),
+        )
+
+    if action == "PRODUCT_KASKO":
+        return (
+            f"{config.PRODUCT_TEXTS['KASKO']}\n\n"
+            f"Если хотите оформить КАСКО, нажмите «Связаться», и менеджер свяжется с вами.",
+            get_products_menu_buttons(),
+        )
+
+    if action == "PRODUCT_MORTGAGE":
+        return (
+            f"{config.PRODUCT_TEXTS['MORTGAGE']}\n\n"
+            f"Если хотите оформить ипотечное страхование, нажмите «Связаться».",
+            get_products_menu_buttons(),
+        )
+
+    if action == "PRODUCT_PROPERTY":
+        return (
+            f"{config.PRODUCT_TEXTS['PROPERTY']}\n\n"
+            f"Если хотите оформить страхование имущества, нажмите «Связаться».",
+            get_products_menu_buttons(),
+        )
+
+    if action == "PRODUCT_LIFE":
+        return (
+            f"{config.PRODUCT_TEXTS['LIFE']}\n\n"
+            f"Если хотите оформить страхование жизни, нажмите «Связаться».",
+            get_products_menu_buttons(),
+        )
+
+    if action == "PRODUCT_TRAVEL":
+        return (
+            f"{config.PRODUCT_TEXTS['TRAVEL']}\n\n"
+            f"Если хотите оформить страхование путешествий, нажмите «Связаться».",
+            get_products_menu_buttons(),
+        )
+
+    if action in {"ACTION_CONTACT_MANAGER", "связаться"}:
+        notify_owner(
+            f"Новый запрос на связь с менеджером.\n"
+            f"Клиент: {client.name}\n"
+            f"user_id: {client.max_chat_id}\n"
+            f"Действие: запрос связи"
+        )
+        return (
+            "Ваш запрос передан менеджеру.\n"
+            "С вами свяжутся по вашему обращению.",
+            get_main_menu_buttons(),
+        )
+
+    if action.startswith("вывод"):
+        try:
+            amount = float(action.split()[1])
+            req = request_withdrawal(db, client.id, amount)
+            return (
+                f"Заявка на вывод #{req.id} создана на сумму {req.amount:.2f} руб.",
+                get_main_menu_buttons(),
+            )
+        except Exception as exc:
+            return f"Не удалось создать заявку на вывод: {exc}", get_main_menu_buttons()
+
+    return (
+        "Команда не распознана.\n\n"
+        + config.MESSAGE_HELP,
+        get_main_menu_buttons(),
+    )
 
 
 @app.get("/")
@@ -157,12 +259,20 @@ def webhook(
             return {"status": "ignored", "reason": "target_id not found"}
 
         client = get_or_create_client(db, target_id, user_name)
-        reply = build_reply_for_text(db, client, callback_payload)
+
+        notify_owner(
+            f"Нажатие кнопки в боте.\n"
+            f"Клиент: {client.name}\n"
+            f"user_id: {client.max_chat_id}\n"
+            f"Нажал: {callback_payload}"
+        )
+
+        reply, buttons = build_reply_for_action(db, client, callback_payload)
 
         if callback_id:
-            answer_callback(callback_id, "Обрабатываю")
+            answer_callback(callback_id, "Принято")
 
-        send_max_notification(target_id, reply, buttons=get_main_menu_buttons())
+        send_max_notification(target_id, reply, buttons=buttons)
         return {"status": "ok", "kind": "callback", "reply": reply}
 
     target_id, user_name, text, start_payload = extract_message_data(payload)
@@ -172,11 +282,17 @@ def webhook(
 
     client = get_or_create_client(db, target_id, user_name, start_payload)
 
-    if not text:
-        text = "/start"
+    incoming_action = text or "/start"
 
-    reply = build_reply_for_text(db, client, text)
-    send_max_notification(target_id, reply, buttons=get_main_menu_buttons())
+    notify_owner(
+        f"Новое сообщение в боте.\n"
+        f"Клиент: {client.name}\n"
+        f"user_id: {client.max_chat_id}\n"
+        f"Сообщение: {incoming_action}"
+    )
+
+    reply, buttons = build_reply_for_action(db, client, incoming_action)
+    send_max_notification(target_id, reply, buttons=buttons)
 
     return {"status": "ok", "kind": "message", "reply": reply}
 
@@ -206,6 +322,14 @@ def admin_register_policy(payload: PolicyIn, db: Session = Depends(get_db)):
             f"Текущий баланс: {balance:.2f} руб."
         ),
         buttons=get_main_menu_buttons(),
+    )
+
+    notify_owner(
+        f"Менеджер зарегистрировал полис.\n"
+        f"Клиент: {client.name}\n"
+        f"user_id: {client.max_chat_id}\n"
+        f"Полис: {payload.policy_type.upper()}\n"
+        f"Сумма: {payload.premium_amount:.2f}"
     )
 
     return {
@@ -275,5 +399,7 @@ def admin_approve_withdrawal(request_id: int, db: Session = Depends(get_db)):
 def admin_broadcast(payload: BroadcastIn, db: Session = Depends(get_db)):
     log_id = create_broadcast(db, payload.title, payload.message, payload.only_with_referrals)
     return {"broadcast_id": log_id}
+
+
 
 
