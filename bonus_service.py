@@ -24,9 +24,7 @@ def send_max_notification(max_user_id: str, message: str, buttons: Optional[list
         print(f"[MAX disabled -> {max_user_id}] {message}")
         return
 
-    payload = {
-        "text": message,
-    }
+    payload = {"text": message}
 
     if buttons:
         payload["attachments"] = [
@@ -79,6 +77,13 @@ def answer_callback(callback_id: str, text: str, notification: bool = False) -> 
             print(f"[MAX callback answer body] {response.text}")
 
 
+def notify_owner(text: str) -> None:
+    if not config.OWNER_USER_ID:
+        print(f"[OWNER notify skipped] {text}")
+        return
+    send_max_notification(config.OWNER_USER_ID, text)
+
+
 def generate_referral_code() -> str:
     return f"REF{secrets.token_hex(4).upper()}"
 
@@ -90,15 +95,39 @@ def generate_referral_link(client: Client) -> str:
 def get_main_menu_buttons() -> list:
     return [
         [
-            {"type": "message", "text": "Баланс", "payload": "Баланс"},
-            {"type": "message", "text": "Уровень", "payload": "Уровень"},
+            {"type": "callback", "text": "Баланс", "payload": "ACTION_BALANCE"},
+            {"type": "callback", "text": "Уровень", "payload": "ACTION_LEVEL"},
         ],
         [
-            {"type": "message", "text": "Реферал", "payload": "Реферал"},
-            {"type": "message", "text": "Вывод 1000", "payload": "Вывод 1000"},
+            {"type": "callback", "text": "Реферал", "payload": "ACTION_REFERRAL"},
+            {"type": "callback", "text": "Вывод 1000", "payload": "ACTION_WITHDRAW_1000"},
         ],
         [
-            {"type": "message", "text": "Помощь", "payload": "Помощь"},
+            {"type": "callback", "text": "Тарифы", "payload": "ACTION_PRODUCTS"},
+            {"type": "callback", "text": "Связаться", "payload": "ACTION_CONTACT_MANAGER"},
+        ],
+        [
+            {"type": "callback", "text": "Помощь", "payload": "ACTION_HELP"},
+        ],
+    ]
+
+
+def get_products_menu_buttons() -> list:
+    return [
+        [
+            {"type": "callback", "text": "ОСАГО", "payload": "PRODUCT_OSAGO"},
+            {"type": "callback", "text": "КАСКО", "payload": "PRODUCT_KASKO"},
+        ],
+        [
+            {"type": "callback", "text": "Ипотека", "payload": "PRODUCT_MORTGAGE"},
+            {"type": "callback", "text": "Имущество", "payload": "PRODUCT_PROPERTY"},
+        ],
+        [
+            {"type": "callback", "text": "Жизнь", "payload": "PRODUCT_LIFE"},
+            {"type": "callback", "text": "Путешествия", "payload": "PRODUCT_TRAVEL"},
+        ],
+        [
+            {"type": "callback", "text": "Назад", "payload": "ACTION_MENU"},
         ],
     ]
 
@@ -350,5 +379,7 @@ def create_broadcast(db: Session, title: str, message: str, only_with_referrals:
         send_max_notification(client.max_chat_id, message, buttons=buttons)
 
     return item.id
+
+
 
 
