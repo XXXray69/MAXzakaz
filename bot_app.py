@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -40,12 +41,38 @@ def require_admin(authorization: str = Header(default="")) -> None:
         raise HTTPException(status_code=401, detail="Неверный ADMIN_TOKEN")
 
 
+def _extract_text_from_message(message: dict[str, Any]) -> str:
+    """
+    MAX может присылать текст в разных полях.
+    Пробуем несколько вариантов.
+    """
+    candidates = [
+        message.get("text"),
+        message.get("payload"),
+        (message.get("body") or {}).get("text"),
+        (message.get("body") or {}).get("payload"),
+        (message.get("message") or {}).get("text"),
+        (message.get("message") or {}).get("payload"),
+    ]
+
+    for value in candidates:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    return ""
+
+
 def extract_message_data(payload: dict[str, Any]) -> tuple[str, str, str, Optional[str]]:
     update_type = payload.get("update_type")
 
     if update_type == "bot_started":
         user = payload.get("user") or {}
-        target_id = str(user.get("user_id") or payload.get("chat_id") or "")
+        target_id = str(
+            user.get("user_id")
+            or payload.get("chat_id")
+            or payload.get("user_id")
+            or ""
+        )
         user_name = user.get("name") or user.get("username") or "Unknown"
         text = "/start"
         start_payload = payload.get("payload")
@@ -54,9 +81,21 @@ def extract_message_data(payload: dict[str, Any]) -> tuple[str, str, str, Option
     message = payload.get("message") or {}
     sender = message.get("sender") or {}
 
-    target_id = str(sender.get("user_id") or message.get("chat_id") or "")
+    target_id = str(
+        sender.get("user_id")
+        or message.get("user_id")
+        or message.get("chat_id")
+        or payload.get("user_id")
+        or ""
+    )
     user_name = sender.get("name") or sender.get("username") or "Unknown"
-    text = (message.get("text") or "").strip()
+
+    text = _extract_text_from_message(message)
+
+    # дополнительный запасной вариант
+    if not text and isinstance(payload.get("text"), str):
+        text = payload.get("text", "").strip()
+
     return target_id, user_name, text, None
 
 
@@ -67,14 +106,19 @@ def extract_callback_data(payload: dict[str, Any]) -> tuple[str, str, str, str]:
 
     callback_id = str(callback.get("callback_id") or "")
     callback_payload = str(callback.get("payload") or "")
-    target_id = str(sender.get("user_id") or message.get("chat_id") or "")
+    target_id = str(
+        sender.get("user_id")
+        or message.get("user_id")
+        or message.get("chat_id")
+        or ""
+    )
     user_name = sender.get("name") or sender.get("username") or "Unknown"
 
     return callback_id, callback_payload, target_id, user_name
 
 
 def route_action(db: Session, client, action: str) -> tuple[str, list]:
-    action = action.strip()
+    action = (action or "").strip()
 
     if action in {"/start", "start"}:
         return (
@@ -205,7 +249,7 @@ def route_action(db: Session, client, action: str) -> tuple[str, list]:
         )
 
     return (
-        "Команда не распознана.",
+        f"Команда не распознана: {action if action else '[пусто]'}",
         get_main_menu_buttons(),
     )
 
@@ -224,10 +268,13 @@ def webhook(
     if config.WEBHOOK_SECRET and x_max_bot_api_secret != config.WEBHOOK_SECRET:
         raise HTTPException(status_code=403, detail="Invalid webhook secret")
 
+    print("[WEBHOOK PAYLOAD]", json.dumps(payload, ensure_ascii=False))
+
     update_type = payload.get("update_type")
 
     if update_type == "message_callback":
         callback_id, callback_payload, target_id, user_name = extract_callback_data(payload)
+
         if not target_id:
             return {"status": "ignored", "reason": "target_id not found"}
 
@@ -246,7 +293,7 @@ def webhook(
             answer_callback(callback_id, "Принято")
 
         send_max_notification(target_id, reply, buttons=buttons)
-        return {"status": "ok"}
+        return {"status": "ok", "kind": "callback", "action": callback_payload}
 
     target_id, user_name, text, start_payload = extract_message_data(payload)
 
@@ -264,7 +311,12 @@ def webhook(
 
     reply, buttons = route_action(db, client, text or "/start")
     send_max_notification(target_id, reply, buttons=buttons)
-    return {"status": "ok"}
+
+    return {
+        "status": "ok",
+        "kind": "message",
+        "text_received": text,
+    }
 
 
 @app.post("/admin/broadcasts", dependencies=[Depends(require_admin)])
@@ -295,6 +347,8 @@ def admin_approve_withdrawal(request_id: int, db: Session = Depends(get_db)):
         "status": req.status,
         "processed_at": req.processed_at.isoformat(),
     }
+
+
 
 
 
