@@ -93,19 +93,19 @@ def generate_referral_link(client: Client) -> str:
 def get_main_menu_buttons() -> list:
     return [
         [
-            {"type": "callback", "text": "Баланс", "payload": "BALANCE"},
-            {"type": "callback", "text": "Уровень", "payload": "LEVEL"},
+            {"type": "message", "text": "Баланс", "payload": "Баланс"},
+            {"type": "message", "text": "Уровень", "payload": "Уровень"},
         ],
         [
-            {"type": "callback", "text": "Реферал", "payload": "REFERRAL"},
-            {"type": "callback", "text": "Вывод 1000", "payload": "WITHDRAW_1000"},
+            {"type": "message", "text": "Реферал", "payload": "Реферал"},
+            {"type": "message", "text": "Вывод 1000", "payload": "Вывод 1000"},
         ],
         [
-            {"type": "callback", "text": "Тарифы", "payload": "PRODUCTS"},
-            {"type": "callback", "text": "Связаться", "payload": "CONTACT_MANAGER"},
+            {"type": "message", "text": "Тарифы", "payload": "Тарифы"},
+            {"type": "message", "text": "Связаться", "payload": "Связаться"},
         ],
         [
-            {"type": "callback", "text": "Помощь", "payload": "HELP"},
+            {"type": "message", "text": "Помощь", "payload": "Помощь"},
         ],
     ]
 
@@ -113,25 +113,25 @@ def get_main_menu_buttons() -> list:
 def get_products_buttons() -> list:
     return [
         [
-            {"type": "callback", "text": "ОСАГО", "payload": "PRODUCT_OSAGO"},
-            {"type": "callback", "text": "КАСКО", "payload": "PRODUCT_KASKO"},
+            {"type": "message", "text": "ОСАГО", "payload": "ОСАГО"},
+            {"type": "message", "text": "КАСКО", "payload": "КАСКО"},
         ],
         [
-            {"type": "callback", "text": "Ипотека", "payload": "PRODUCT_MORTGAGE"},
-            {"type": "callback", "text": "Имущество", "payload": "PRODUCT_PROPERTY"},
+            {"type": "message", "text": "Ипотека", "payload": "Ипотека"},
+            {"type": "message", "text": "Имущество", "payload": "Имущество"},
         ],
         [
-            {"type": "callback", "text": "Жизнь", "payload": "PRODUCT_LIFE"},
-            {"type": "callback", "text": "Путешествия", "payload": "PRODUCT_TRAVEL"},
+            {"type": "message", "text": "Жизнь", "payload": "Жизнь"},
+            {"type": "message", "text": "Путешествия", "payload": "Путешествия"},
         ],
         [
-            {"type": "callback", "text": "Назад", "payload": "BACK_MAIN"},
+            {"type": "message", "text": "Назад", "payload": "Назад"},
         ],
     ]
 
 
-def get_back_to_main_buttons() -> list:
-    return [[{"type": "callback", "text": "Назад", "payload": "BACK_MAIN"}]]
+def get_back_buttons(back_payload: str = "Назад") -> list:
+    return [[{"type": "message", "text": "Назад", "payload": back_payload}]]
 
 
 def get_or_create_client(
@@ -192,7 +192,11 @@ def _spent_for_period(db: Session, client_id: int) -> float:
     since = datetime.utcnow() - timedelta(days=config.LOYALTY_PERIOD_DAYS)
     total = (
         db.query(func.coalesce(func.sum(Policy.premium_amount), 0.0))
-        .filter(Policy.client_id == client_id, Policy.created_at >= since, Policy.status == "ACTIVE")
+        .filter(
+            Policy.client_id == client_id,
+            Policy.created_at >= since,
+            Policy.status == "ACTIVE",
+        )
         .scalar()
     )
     return float(total or 0.0)
@@ -219,6 +223,101 @@ def update_client_tier(db: Session, client_id: int) -> str:
     return client.loyalty_level
 
 
+def register_policy(
+    db: Session,
+    client_id: int,
+    policy_type: str,
+    premium_amount: float,
+    start_date: datetime,
+    end_date: datetime,
+    referral_source_client_id: Optional[int] = None,
+) -> Policy:
+    policy_type = policy_type.upper()
+
+    if end_date <= start_date:
+        raise ValueError("Дата окончания должна быть позже даты начала")
+    if premium_amount <= 0:
+        raise ValueError("Сумма полиса должна быть больше нуля")
+
+    rate = config.POLICY_BONUS_RATES.get(policy_type, 0.0)
+    bonus_amount = round(premium_amount * rate, 2)
+
+    policy = Policy(
+        client_id=client_id,
+        policy_type=policy_type,
+        premium_amount=premium_amount,
+        start_date=start_date,
+        end_date=end_date,
+        referral_source_client_id=referral_source_client_id,
+        bonus_rate=rate,
+        bonus_amount=bonus_amount,
+    )
+    db.add(policy)
+    db.flush()
+
+    if bonus_amount > 0:
+        db.add(
+            BonusLedger(
+                client_id=client_id,
+                amount=bonus_amount,
+                entry_type="POLICY_BONUS",
+                description=f"Бонус за полис {policy_type}",
+                available_from=start_date,
+                expires_at=end_date,
+                policy_id=policy.id,
+            )
+        )
+
+    if referral_source_client_id:
+        ref_rate = config.REFERRAL_BONUS_RATES.get(policy_type, 0.0)
+        ref_bonus = round(premium_amount * ref_rate, 2)
+        if ref_bonus > 0:
+            db.add(
+                BonusLedger(
+                    client_id=referral_source_client_id,
+                    amount=ref_bonus,
+                    entry_type="REFERRAL_BONUS",
+                    description=f"Реферальный бонус за полис {policy_type}",
+                    available_from=start_date,
+                    expires_at=end_date,
+                    policy_id=policy.id,
+                )
+            )
+
+    db.commit()
+    db.refresh(policy)
+    update_client_tier(db, client_id)
+    return policy
+
+
+def apply_discount_to_policy(db: Session, client_id: int, target_policy_type: str, requested_amount: float) -> float:
+    policy_type = target_policy_type.upper()
+
+    if policy_type not in config.VOLUNTARY_POLICY_TYPES:
+        raise ValueError("Бонусы можно списывать только на добровольные виды страхования")
+    if requested_amount <= 0:
+        raise ValueError("Сумма списания должна быть больше нуля")
+
+    balance = get_client_balance(db, client_id)
+    amount = min(balance, requested_amount)
+
+    if amount <= 0:
+        return 0.0
+
+    db.add(
+        BonusLedger(
+            client_id=client_id,
+            amount=-round(amount, 2),
+            entry_type="DISCOUNT_APPLIED",
+            description=f"Списание бонусов на полис {policy_type}",
+            available_from=datetime.utcnow(),
+            expires_at=None,
+        )
+    )
+    db.commit()
+    return round(amount, 2)
+
+
 def request_withdrawal(db: Session, client_id: int, amount: float) -> WithdrawalRequest:
     if amount < config.CASHBACK_THRESHOLD:
         raise ValueError(f"Минимальный порог вывода {config.CASHBACK_THRESHOLD:.0f} руб.")
@@ -238,7 +337,11 @@ def request_withdrawal(db: Session, client_id: int, amount: float) -> Withdrawal
         )
     )
 
-    request = WithdrawalRequest(client_id=client_id, amount=round(amount, 2), status="PENDING")
+    request = WithdrawalRequest(
+        client_id=client_id,
+        amount=round(amount, 2),
+        status="PENDING",
+    )
     db.add(request)
     db.commit()
     db.refresh(request)
@@ -260,7 +363,11 @@ def approve_withdrawal(db: Session, request_id: int) -> WithdrawalRequest:
 
 
 def create_broadcast(db: Session, title: str, message: str, only_with_referrals: bool = False) -> int:
-    item = BroadcastLog(title=title, message=message, only_with_referrals=only_with_referrals)
+    item = BroadcastLog(
+        title=title,
+        message=message,
+        only_with_referrals=only_with_referrals,
+    )
     db.add(item)
     db.commit()
     db.refresh(item)
@@ -273,6 +380,8 @@ def create_broadcast(db: Session, title: str, message: str, only_with_referrals:
         send_max_notification(client.max_chat_id, message, buttons=get_main_menu_buttons())
 
     return item.id
+
+
 
 
 
