@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 import config
@@ -23,20 +22,10 @@ from bonus_service import (
     send_max_notification,
     update_client_tier,
 )
-from models import Client, WithdrawalRequest, get_db, initialize_db
+from models import WithdrawalRequest, get_db, initialize_db
 
 app = FastAPI(title="MAX Loyalty Bot")
 initialize_db()
-
-
-class PolicyIn(BaseModel):
-    client_chat_id: str
-    client_name: str = "Unknown"
-    policy_type: str
-    premium_amount: float = Field(gt=0)
-    start_date: datetime
-    end_date: datetime
-    referral_code: Optional[str] = None
 
 
 class BroadcastIn(BaseModel):
@@ -84,7 +73,7 @@ def extract_callback_data(payload: dict[str, Any]) -> tuple[str, str, str, str]:
     return callback_id, callback_payload, target_id, user_name
 
 
-def route_action(db: Session, client: Client, action: str) -> tuple[str, list]:
+def route_action(db: Session, client, action: str) -> tuple[str, list]:
     action = action.strip()
 
     if action in {"/start", "start"}:
@@ -239,6 +228,9 @@ def webhook(
 
     if update_type == "message_callback":
         callback_id, callback_payload, target_id, user_name = extract_callback_data(payload)
+        if not target_id:
+            return {"status": "ignored", "reason": "target_id not found"}
+
         client = get_or_create_client(db, target_id, user_name)
 
         notify_owner(
@@ -257,6 +249,10 @@ def webhook(
         return {"status": "ok"}
 
     target_id, user_name, text, start_payload = extract_message_data(payload)
+
+    if not target_id:
+        return {"status": "ignored", "reason": "target_id not found"}
+
     client = get_or_create_client(db, target_id, user_name, start_payload)
 
     notify_owner(
@@ -299,6 +295,8 @@ def admin_approve_withdrawal(request_id: int, db: Session = Depends(get_db)):
         "status": req.status,
         "processed_at": req.processed_at.isoformat(),
     }
+
+
 
 
 
