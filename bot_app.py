@@ -124,7 +124,7 @@ def welcome_text(client_name: str) -> str:
         f"— узнать уровень лояльности\n"
         f"— получить реферальную ссылку\n"
         f"— оставить заявку на вывод бонусов\n"
-        f"— выбрать интересующий вид страхования\n"
+        f"— выбрать интересующую услугу\n"
         f"— передать запрос владельцу/менеджеру\n\n"
         f"Выберите нужное действие кнопками ниже."
     )
@@ -174,19 +174,19 @@ def route_action(db: Session, client: Client, action: str) -> tuple[str, list]:
             )
 
     if action == "Услуги":
-        return "Выберите вид страхования:", get_products_buttons()
+        return "Выберите нужную услугу:", get_products_buttons()
 
     if action in config.PRODUCT_TEXTS:
         LAST_SELECTED_PRODUCT[client.max_chat_id] = action
-        return config.PRODUCT_TEXTS[action], get_consult_buttons("Тарифы")
+        return config.PRODUCT_TEXTS[action], get_consult_buttons("Услуги")
 
     if action == "Заказать консультацию":
         product_name = LAST_SELECTED_PRODUCT.get(client.max_chat_id, "не указан")
         notify_owner(
-            f"Запрос консультации по тарифу.\n"
+            f"Запрос консультации по услуге.\n"
             f"Клиент: {client.name}\n"
             f"user_id: {client.max_chat_id}\n"
-            f"Тариф: {product_name}"
+            f"Услуга: {product_name}"
         )
         return (
             "Спасибо за обращение! Наш менеджер свяжется с вами в ближайшее время.",
@@ -320,6 +320,7 @@ def admin_approve_withdrawal(request_id: int, db: Session = Depends(get_db)):
         "status": req.status,
         "processed_at": req.processed_at.isoformat(),
     }
+
 
 
 
