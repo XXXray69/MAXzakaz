@@ -15,6 +15,7 @@ from bonus_service import (
     generate_referral_link,
     get_back_buttons,
     get_client_balance,
+    get_consult_buttons,
     get_main_menu_buttons,
     get_or_create_client,
     get_products_buttons,
@@ -23,10 +24,12 @@ from bonus_service import (
     send_max_notification,
     update_client_tier,
 )
-from models import WithdrawalRequest, get_db, initialize_db
+from models import Client, WithdrawalRequest, get_db, initialize_db
 
 app = FastAPI(title="MAX Loyalty Bot")
 initialize_db()
+
+HELP_WAITING_USERS: set[str] = set()
 
 
 class BroadcastIn(BaseModel):
@@ -42,10 +45,6 @@ def require_admin(authorization: str = Header(default="")) -> None:
 
 
 def _extract_text_from_message(message: dict[str, Any]) -> str:
-    """
-    MAX может присылать текст в разных полях.
-    Пробуем несколько вариантов.
-    """
     candidates = [
         message.get("text"),
         message.get("payload"),
@@ -91,8 +90,6 @@ def extract_message_data(payload: dict[str, Any]) -> tuple[str, str, str, Option
     user_name = sender.get("name") or sender.get("username") or "Unknown"
 
     text = _extract_text_from_message(message)
-
-    # дополнительный запасной вариант
     if not text and isinstance(payload.get("text"), str):
         text = payload.get("text", "").strip()
 
@@ -117,25 +114,26 @@ def extract_callback_data(payload: dict[str, Any]) -> tuple[str, str, str, str]:
     return callback_id, callback_payload, target_id, user_name
 
 
-def route_action(db: Session, client, action: str) -> tuple[str, list]:
+def welcome_text(client_name: str) -> str:
+    return (
+        f"Здравствуйте, {client_name}!\n\n"
+        f"Вы попали в Центр страхования.\n"
+        f"Здесь вы можете:\n"
+        f"— посмотреть бонусный баланс\n"
+        f"— узнать уровень лояльности\n"
+        f"— получить реферальную ссылку\n"
+        f"— оставить заявку на вывод бонусов\n"
+        f"— выбрать интересующий вид страхования\n"
+        f"— передать запрос владельцу/менеджеру\n\n"
+        f"Выберите нужное действие кнопками ниже."
+    )
+
+
+def route_action(db: Session, client: Client, action: str) -> tuple[str, list]:
     action = (action or "").strip()
 
     if action in {"/start", "start"}:
-        return (
-            (
-                f"Здравствуйте, {client.name}!\n\n"
-                f"Вы попали в Центр страхования.\n"
-                f"Здесь вы можете:\n"
-                f"— посмотреть бонусный баланс\n"
-                f"— узнать уровень лояльности\n"
-                f"— получить реферальную ссылку\n"
-                f"— оставить заявку на вывод бонусов\n"
-                f"— выбрать интересующий вид страхования\n"
-                f"— передать запрос владельцу/менеджеру\n\n"
-                f"Выберите нужное действие кнопками ниже."
-            ),
-            get_main_menu_buttons(),
-        )
+        return welcome_text(client.name), get_main_menu_buttons()
 
     if action == "Баланс":
         return (
@@ -181,45 +179,23 @@ def route_action(db: Session, client, action: str) -> tuple[str, list]:
             )
 
     if action == "Тарифы":
-        return (
-            "Выберите вид страхования:",
-            get_products_buttons(),
-        )
+        return "Выберите вид страхования:", get_products_buttons()
 
-    if action == "ОСАГО":
-        return (
-            "ОСАГО — обязательное страхование автогражданской ответственности.",
-            get_back_buttons("Тарифы"),
-        )
+    if action in config.PRODUCT_TEXTS:
+        return config.PRODUCT_TEXTS[action], get_consult_buttons("Тарифы")
 
-    if action == "КАСКО":
-        return (
-            "КАСКО — защита автомобиля от ущерба, угона и других рисков.",
-            get_back_buttons("Тарифы"),
+    if action.startswith("Консультация:"):
+        product_name = action.split(":", 1)[1].strip()
+        notify_owner(
+            f"Запрос консультации по тарифу.\n"
+            f"Клиент: {client.name}\n"
+            f"user_id: {client.max_chat_id}\n"
+            f"Тариф: {product_name}"
         )
-
-    if action == "Ипотека":
         return (
-            "Ипотечное страхование — защита объекта, жизни и титула по требованиям банка.",
-            get_back_buttons("Тарифы"),
-        )
-
-    if action == "Имущество":
-        return (
-            "Страхование имущества — защита квартиры, дома, ремонта и вещей.",
-            get_back_buttons("Тарифы"),
-        )
-
-    if action == "Жизнь":
-        return (
-            "Страхование жизни — финансовая защита семьи и близких.",
-            get_back_buttons("Тарифы"),
-        )
-
-    if action == "Путешествия":
-        return (
-            "Страхование путешествий — защита на время поездки.",
-            get_back_buttons("Тарифы"),
+            f"Заявка на консультацию по тарифу «{product_name}» отправлена.\n"
+            f"Наш менеджер свяжется с вами в ближайшее время.",
+            get_main_menu_buttons(),
         )
 
     if action == "Связаться":
@@ -234,24 +210,18 @@ def route_action(db: Session, client, action: str) -> tuple[str, list]:
             get_back_buttons("Назад"),
         )
 
-    if action in {"Назад", "Помощь"}:
+    if action == "Помощь":
+        HELP_WAITING_USERS.add(client.max_chat_id)
         return (
-            (
-                "Доступные действия:\n"
-                "Баланс\n"
-                "Уровень\n"
-                "Реферал\n"
-                "Вывод 1000\n"
-                "Тарифы\n"
-                "Связаться"
-            ),
-            get_main_menu_buttons(),
+            "Напишите, какой у вас вопрос, и наш менеджер ответит вам в ближайшее время.",
+            get_back_buttons("Назад"),
         )
 
-    return (
-        f"Команда не распознана: {action if action else '[пусто]'}",
-        get_main_menu_buttons(),
-    )
+    if action == "Назад":
+        HELP_WAITING_USERS.discard(client.max_chat_id)
+        return welcome_text(client.name), get_main_menu_buttons()
+
+    return "Команда не распознана.", get_main_menu_buttons()
 
 
 @app.get("/")
@@ -280,13 +250,6 @@ def webhook(
 
         client = get_or_create_client(db, target_id, user_name)
 
-        notify_owner(
-            f"Нажатие кнопки.\n"
-            f"Клиент: {client.name}\n"
-            f"user_id: {client.max_chat_id}\n"
-            f"Кнопка: {callback_payload}"
-        )
-
         reply, buttons = route_action(db, client, callback_payload)
 
         if callback_id:
@@ -301,6 +264,21 @@ def webhook(
         return {"status": "ignored", "reason": "target_id not found"}
 
     client = get_or_create_client(db, target_id, user_name, start_payload)
+
+    if client.max_chat_id in HELP_WAITING_USERS and text not in {"Назад", "Помощь"}:
+        notify_owner(
+            f"Сообщение в раздел помощи.\n"
+            f"Клиент: {client.name}\n"
+            f"user_id: {client.max_chat_id}\n"
+            f"Вопрос: {text}"
+        )
+        HELP_WAITING_USERS.discard(client.max_chat_id)
+        send_max_notification(client.max_chat_id, "Сообщение отправлено.", buttons=get_main_menu_buttons())
+        return {
+            "status": "ok",
+            "kind": "help_message",
+            "text_received": text,
+        }
 
     notify_owner(
         f"Новое сообщение.\n"
@@ -347,6 +325,7 @@ def admin_approve_withdrawal(request_id: int, db: Session = Depends(get_db)):
         "status": req.status,
         "processed_at": req.processed_at.isoformat(),
     }
+
 
 
 
