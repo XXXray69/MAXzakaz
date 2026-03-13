@@ -173,7 +173,7 @@ def route_action(db: Session, client: Client, action: str) -> tuple[str, list]:
                 get_back_buttons("Назад"),
             )
 
-    if action == "Тарифы":
+    if action == "Услуги":
         return "Выберите вид страхования:", get_products_buttons()
 
     if action in config.PRODUCT_TEXTS:
@@ -320,6 +320,7 @@ def admin_approve_withdrawal(request_id: int, db: Session = Depends(get_db)):
         "status": req.status,
         "processed_at": req.processed_at.isoformat(),
     }
+
 
 
 
