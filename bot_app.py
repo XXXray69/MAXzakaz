@@ -182,7 +182,7 @@ def route_action(db: Session, client: Client, action: str) -> tuple[str, list]:
         return "Выберите вид страхования:", get_products_buttons()
 
     if action in config.PRODUCT_TEXTS:
-        return config.PRODUCT_TEXTS[action], get_consult_buttons("Тарифы")
+        return config.PRODUCT_TEXTS[action], get_consult_buttons(action, "Тарифы")
 
     if action.startswith("Консультация:"):
         product_name = action.split(":", 1)[1].strip()
@@ -193,8 +193,7 @@ def route_action(db: Session, client: Client, action: str) -> tuple[str, list]:
             f"Тариф: {product_name}"
         )
         return (
-            f"Заявка на консультацию по тарифу «{product_name}» отправлена.\n"
-            f"Наш менеджер свяжется с вами в ближайшее время.",
+            "Спасибо за обращение! Наш менеджер свяжется с вами в ближайшее время.",
             get_main_menu_buttons(),
         )
 
@@ -325,6 +324,7 @@ def admin_approve_withdrawal(request_id: int, db: Session = Depends(get_db)):
         "status": req.status,
         "processed_at": req.processed_at.isoformat(),
     }
+
 
 
 
