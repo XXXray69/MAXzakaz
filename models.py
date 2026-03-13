@@ -8,10 +8,12 @@ from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 import config
 
 Base = declarative_base()
+
 engine = create_engine(
     config.DATABASE_URL,
     connect_args={"check_same_thread": False} if config.DATABASE_URL.startswith("sqlite") else {},
 )
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
@@ -23,8 +25,10 @@ class Client(Base):
     name = Column(String(255), nullable=False, default="Unknown")
     referral_code = Column(String(64), unique=True, nullable=False, index=True)
     referred_by_id = Column(Integer, ForeignKey("clients.id"), nullable=True)
+
     loyalty_level = Column(String(32), nullable=False, default="BRONZE")
     total_spent_last_period = Column(Float, nullable=False, default=0.0)
+
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
     referred_by = relationship("Client", remote_side=[id])
@@ -48,14 +52,20 @@ class Policy(Base):
 
     id = Column(Integer, primary_key=True)
     client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+
     policy_type = Column(String(64), nullable=False, index=True)
     premium_amount = Column(Float, nullable=False)
+
     start_date = Column(DateTime, nullable=False)
     end_date = Column(DateTime, nullable=False)
+
     status = Column(String(32), nullable=False, default="ACTIVE")
+
     referral_source_client_id = Column(Integer, ForeignKey("clients.id"), nullable=True)
+
     bonus_rate = Column(Float, nullable=False, default=0.0)
     bonus_amount = Column(Float, nullable=False, default=0.0)
+
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
     client = relationship(
@@ -75,13 +85,17 @@ class BonusLedger(Base):
 
     id = Column(Integer, primary_key=True)
     client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+
     amount = Column(Float, nullable=False)
     entry_type = Column(String(64), nullable=False)
     description = Column(Text, nullable=False)
+
     available_from = Column(DateTime, nullable=False, default=datetime.utcnow)
     expires_at = Column(DateTime, nullable=True)
+
     policy_id = Column(Integer, ForeignKey("policies.id"), nullable=True)
     referral_code = Column(String(64), nullable=True)
+
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
     client = relationship("Client", back_populates="bonuses")
@@ -92,8 +106,10 @@ class WithdrawalRequest(Base):
 
     id = Column(Integer, primary_key=True)
     client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+
     amount = Column(Float, nullable=False)
     status = Column(String(32), nullable=False, default="PENDING")
+
     requested_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     processed_at = Column(DateTime, nullable=True)
 
@@ -118,5 +134,6 @@ def get_db():
         yield db
     finally:
         db.close()
+
 
 
