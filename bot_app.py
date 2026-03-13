@@ -30,6 +30,7 @@ app = FastAPI(title="MAX Loyalty Bot")
 initialize_db()
 
 HELP_WAITING_USERS: set[str] = set()
+LAST_SELECTED_PRODUCT: dict[str, str] = {}
 
 
 class BroadcastIn(BaseModel):
@@ -145,19 +146,15 @@ def route_action(db: Session, client: Client, action: str) -> tuple[str, list]:
         update_client_tier(db, client.id)
         db.refresh(client)
         return (
-            (
-                f"Ваш уровень: {client.loyalty_level}.\n"
-                f"Сумма оформленных полисов за период: {client.total_spent_last_period:.2f} руб."
-            ),
+            f"Ваш уровень: {client.loyalty_level}.\n"
+            f"Сумма оформленных полисов за период: {client.total_spent_last_period:.2f} руб.",
             get_back_buttons("Назад"),
         )
 
     if action == "Реферал":
         return (
-            (
-                f"Ваша реферальная ссылка:\n{generate_referral_link(client)}\n\n"
-                f"Отправьте её знакомым. Если по вашей рекомендации оформят полис, вам начислится бонус."
-            ),
+            f"Ваша реферальная ссылка:\n{generate_referral_link(client)}\n\n"
+            f"Отправьте её знакомым. Если по вашей рекомендации оформят полис, вам начислится бонус.",
             get_back_buttons("Назад"),
         )
 
@@ -165,11 +162,9 @@ def route_action(db: Session, client: Client, action: str) -> tuple[str, list]:
         try:
             req = request_withdrawal(db, client.id, 1000)
             return (
-                (
-                    f"Заявка на вывод создана.\n"
-                    f"Номер: {req.id}\n"
-                    f"Сумма: {req.amount:.2f} руб."
-                ),
+                f"Заявка на вывод создана.\n"
+                f"Номер: {req.id}\n"
+                f"Сумма: {req.amount:.2f} руб.",
                 get_back_buttons("Назад"),
             )
         except Exception as exc:
@@ -182,10 +177,11 @@ def route_action(db: Session, client: Client, action: str) -> tuple[str, list]:
         return "Выберите вид страхования:", get_products_buttons()
 
     if action in config.PRODUCT_TEXTS:
-        return config.PRODUCT_TEXTS[action], get_consult_buttons(action, "Тарифы")
+        LAST_SELECTED_PRODUCT[client.max_chat_id] = action
+        return config.PRODUCT_TEXTS[action], get_consult_buttons("Тарифы")
 
-    if action.startswith("Консультация:"):
-        product_name = action.split(":", 1)[1].strip()
+    if action == "Заказать консультацию":
+        product_name = LAST_SELECTED_PRODUCT.get(client.max_chat_id, "не указан")
         notify_owner(
             f"Запрос консультации по тарифу.\n"
             f"Клиент: {client.name}\n"
@@ -216,7 +212,7 @@ def route_action(db: Session, client: Client, action: str) -> tuple[str, list]:
             get_back_buttons("Назад"),
         )
 
-    if action == "Назад":
+    if action in {"Назад", "Вернуться назад"}:
         HELP_WAITING_USERS.discard(client.max_chat_id)
         return welcome_text(client.name), get_main_menu_buttons()
 
@@ -264,7 +260,7 @@ def webhook(
 
     client = get_or_create_client(db, target_id, user_name, start_payload)
 
-    if client.max_chat_id in HELP_WAITING_USERS and text not in {"Назад", "Помощь"}:
+    if client.max_chat_id in HELP_WAITING_USERS and text not in {"Назад", "Вернуться назад", "Помощь"}:
         notify_owner(
             f"Сообщение в раздел помощи.\n"
             f"Клиент: {client.name}\n"
@@ -324,6 +320,7 @@ def admin_approve_withdrawal(request_id: int, db: Session = Depends(get_db)):
         "status": req.status,
         "processed_at": req.processed_at.isoformat(),
     }
+
 
 
 
