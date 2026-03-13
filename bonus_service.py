@@ -118,11 +118,15 @@ def get_products_buttons() -> list:
         ],
         [
             {"type": "message", "text": "Ипотека", "payload": "Ипотека"},
-            {"type": "message", "text": "Имущество", "payload": "Имущество"},
+            {"type": "message", "text": "ИФЛ", "payload": "ИФЛ"},
         ],
         [
-            {"type": "message", "text": "Жизнь", "payload": "Жизнь"},
-            {"type": "message", "text": "Путешествия", "payload": "Путешествия"},
+            {"type": "message", "text": "Мини Каско", "payload": "Мини Каско"},
+            {"type": "message", "text": "Клещ", "payload": "Клещ"},
+        ],
+        [
+            {"type": "message", "text": "НС", "payload": "НС"},
+            {"type": "message", "text": "Прочее", "payload": "Прочее"},
         ],
         [
             {"type": "message", "text": "Назад", "payload": "Назад"},
@@ -131,7 +135,14 @@ def get_products_buttons() -> list:
 
 
 def get_back_buttons(back_payload: str = "Назад") -> list:
-    return [[{"type": "message", "text": "Назад", "payload": back_payload}]]
+    return [[{"type": "message", "text": "Вернуться назад", "payload": back_payload}]]
+
+
+def get_consult_buttons(back_payload: str) -> list:
+    return [
+        [{"type": "message", "text": "Заказать консультацию", "payload": f"Консультация:{back_payload}"}],
+        [{"type": "message", "text": "Вернуться назад", "payload": back_payload}],
+    ]
 
 
 def get_or_create_client(
@@ -285,6 +296,7 @@ def create_broadcast(db: Session, title: str, message: str, only_with_referrals:
         send_max_notification(client.max_chat_id, message, buttons=get_main_menu_buttons())
 
     return item.id
+
 
 
 
