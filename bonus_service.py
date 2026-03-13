@@ -101,7 +101,7 @@ def get_main_menu_buttons() -> list:
             {"type": "message", "text": "Вывод 1000", "payload": "Вывод 1000"},
         ],
         [
-            {"type": "message", "text": "Тарифы", "payload": "Тарифы"},
+            {"type": "message", "text": "Услуги", "payload": "Услуги"},
             {"type": "message", "text": "Связаться", "payload": "Связаться"},
         ],
         [
@@ -138,7 +138,7 @@ def get_back_buttons(back_payload: str = "Назад") -> list:
     return [[{"type": "message", "text": "Вернуться назад", "payload": back_payload}]]
 
 
-def get_consult_buttons(back_payload: str = "Тарифы") -> list:
+def get_consult_buttons(back_payload: str = "Услуги") -> list:
     return [
         [{"type": "message", "text": "Заказать консультацию", "payload": "Заказать консультацию"}],
         [{"type": "message", "text": "Вернуться назад", "payload": back_payload}],
@@ -296,6 +296,7 @@ def create_broadcast(db: Session, title: str, message: str, only_with_referrals:
         send_max_notification(client.max_chat_id, message, buttons=get_main_menu_buttons())
 
     return item.id
+
 
 
 
