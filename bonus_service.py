@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional
 
 import requests
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 import config
-from models import BonusLedger, BroadcastLog, Client, Policy, WithdrawalRequest
+from models import Client, ReferralEvent
 
 
 def _max_headers() -> dict:
@@ -75,11 +74,11 @@ def answer_callback(callback_id: str, text: str, notification: bool = False) -> 
             print(f"[MAX callback answer body] {response.text}")
 
 
-def notify_owner(text: str) -> None:
+def notify_owner(text: str, buttons: Optional[list] = None) -> None:
     if not config.OWNER_USER_ID:
         print(f"[OWNER notify skipped] {text}")
         return
-    send_max_notification(config.OWNER_USER_ID, text)
+    send_max_notification(config.OWNER_USER_ID, text, buttons=buttons)
 
 
 def generate_referral_code() -> str:
@@ -92,56 +91,15 @@ def generate_referral_link(client: Client) -> str:
 
 def get_main_menu_buttons() -> list:
     return [
-        [
-            {"type": "message", "text": "Баланс", "payload": "Баланс"},
-            {"type": "message", "text": "Уровень", "payload": "Уровень"},
-        ],
-        [
-            {"type": "message", "text": "Реферал", "payload": "Реферал"},
-            {"type": "message", "text": "Вывод 1000", "payload": "Вывод 1000"},
-        ],
-        [
-            {"type": "message", "text": "Услуги", "payload": "Услуги"},
-            {"type": "message", "text": "Связаться", "payload": "Связаться"},
-        ],
-        [
-            {"type": "message", "text": "Помощь", "payload": "Помощь"},
-        ],
+        [{"type": "message", "text": "Заказать услугу", "payload": "Заказать услугу"}],
+        [{"type": "message", "text": "Реферальная программа", "payload": "Реферальная программа"}],
     ]
 
 
-def get_products_buttons() -> list:
+def get_owner_referral_buttons(event_id: int) -> list:
     return [
-        [
-            {"type": "message", "text": "ОСАГО", "payload": "ОСАГО"},
-            {"type": "message", "text": "КАСКО", "payload": "КАСКО"},
-        ],
-        [
-            {"type": "message", "text": "Ипотека", "payload": "Ипотека"},
-            {"type": "message", "text": "ИФЛ", "payload": "ИФЛ"},
-        ],
-        [
-            {"type": "message", "text": "Мини Каско", "payload": "Мини Каско"},
-            {"type": "message", "text": "Клещ", "payload": "Клещ"},
-        ],
-        [
-            {"type": "message", "text": "НС", "payload": "НС"},
-            {"type": "message", "text": "Прочее", "payload": "Прочее"},
-        ],
-        [
-            {"type": "message", "text": "Назад", "payload": "Назад"},
-        ],
-    ]
-
-
-def get_back_buttons(back_payload: str = "Назад") -> list:
-    return [[{"type": "message", "text": "Вернуться назад", "payload": back_payload}]]
-
-
-def get_consult_buttons(back_payload: str = "Услуги") -> list:
-    return [
-        [{"type": "message", "text": "Заказать консультацию", "payload": "Заказать консультацию"}],
-        [{"type": "message", "text": "Вернуться назад", "payload": back_payload}],
+        [{"type": "message", "text": f"Подтвердить {event_id}", "payload": f"Подтвердить {event_id}"}],
+        [{"type": "message", "text": f"Отменить {event_id}", "payload": f"Отменить {event_id}"}],
     ]
 
 
@@ -181,121 +139,56 @@ def get_or_create_client(
     return client
 
 
-def _sum_active_bonus(db: Session, client_id: int) -> float:
-    now = datetime.utcnow()
-    total = (
-        db.query(func.coalesce(func.sum(BonusLedger.amount), 0.0))
+def create_referral_event(db: Session, inviter_client_id: int, referred_client_id: int) -> ReferralEvent:
+    existing = (
+        db.query(ReferralEvent)
         .filter(
-            BonusLedger.client_id == client_id,
-            BonusLedger.available_from <= now,
-            (BonusLedger.expires_at.is_(None) | (BonusLedger.expires_at >= now)),
+            ReferralEvent.inviter_client_id == inviter_client_id,
+            ReferralEvent.referred_client_id == referred_client_id,
+            ReferralEvent.status == "PENDING",
         )
-        .scalar()
+        .first()
     )
-    return round(float(total or 0.0), 2)
+    if existing:
+        return existing
 
-
-def get_client_balance(db: Session, client_id: int) -> float:
-    return max(0.0, _sum_active_bonus(db, client_id))
-
-
-def _spent_for_period(db: Session, client_id: int) -> float:
-    since = datetime.utcnow() - timedelta(days=config.LOYALTY_PERIOD_DAYS)
-    total = (
-        db.query(func.coalesce(func.sum(Policy.premium_amount), 0.0))
-        .filter(
-            Policy.client_id == client_id,
-            Policy.created_at >= since,
-            Policy.status == "ACTIVE",
-        )
-        .scalar()
-    )
-    return float(total or 0.0)
-
-
-def get_loyalty_level(total_spent: float) -> str:
-    level = "BRONZE"
-    for name, data in config.LOYALTY_TIERS.items():
-        if total_spent >= data["min_spent"] and config.LOYALTY_TIERS[level]["min_spent"] <= data["min_spent"]:
-            level = name
-    return level
-
-
-def update_client_tier(db: Session, client_id: int) -> str:
-    client = db.get(Client, client_id)
-    if not client:
-        raise ValueError("Клиент не найден")
-
-    spent = _spent_for_period(db, client_id)
-    client.total_spent_last_period = spent
-    client.loyalty_level = get_loyalty_level(spent)
-    db.commit()
-    db.refresh(client)
-    return client.loyalty_level
-
-
-def request_withdrawal(db: Session, client_id: int, amount: float) -> WithdrawalRequest:
-    if amount < config.CASHBACK_THRESHOLD:
-        raise ValueError(f"Минимальный порог вывода {config.CASHBACK_THRESHOLD:.0f} руб.")
-
-    balance = get_client_balance(db, client_id)
-    if amount > balance:
-        raise ValueError("Недостаточно бонусов для вывода")
-
-    db.add(
-        BonusLedger(
-            client_id=client_id,
-            amount=-round(amount, 2),
-            entry_type="WITHDRAWAL_HOLD",
-            description="Резервирование бонусов под вывод на карту",
-            available_from=datetime.utcnow(),
-            expires_at=None,
-        )
-    )
-
-    request = WithdrawalRequest(
-        client_id=client_id,
-        amount=round(amount, 2),
+    event = ReferralEvent(
+        inviter_client_id=inviter_client_id,
+        referred_client_id=referred_client_id,
         status="PENDING",
     )
-    db.add(request)
+    db.add(event)
     db.commit()
-    db.refresh(request)
-    return request
+    db.refresh(event)
+    return event
 
 
-def approve_withdrawal(db: Session, request_id: int) -> WithdrawalRequest:
-    req = db.get(WithdrawalRequest, request_id)
-    if not req:
-        raise ValueError("Заявка не найдена")
-    if req.status != "PENDING":
-        raise ValueError("Заявка уже обработана")
+def approve_referral_event(db: Session, event_id: int) -> ReferralEvent:
+    event = db.get(ReferralEvent, event_id)
+    if not event:
+        raise ValueError("Реферальное событие не найдено")
+    if event.status != "PENDING":
+        raise ValueError("Событие уже обработано")
 
-    req.status = "APPROVED"
-    req.processed_at = datetime.utcnow()
+    event.status = "APPROVED"
+    event.processed_at = datetime.utcnow()
     db.commit()
-    db.refresh(req)
-    return req
+    db.refresh(event)
+    return event
 
 
-def create_broadcast(db: Session, title: str, message: str, only_with_referrals: bool = False) -> int:
-    item = BroadcastLog(
-        title=title,
-        message=message,
-        only_with_referrals=only_with_referrals,
-    )
-    db.add(item)
+def cancel_referral_event(db: Session, event_id: int) -> ReferralEvent:
+    event = db.get(ReferralEvent, event_id)
+    if not event:
+        raise ValueError("Реферальное событие не найдено")
+    if event.status != "PENDING":
+        raise ValueError("Событие уже обработано")
+
+    event.status = "CANCELLED"
+    event.processed_at = datetime.utcnow()
     db.commit()
-    db.refresh(item)
-
-    query = db.query(Client)
-    if only_with_referrals:
-        query = query.filter(Client.referred_by_id.isnot(None))
-
-    for client in query.all():
-        send_max_notification(client.max_chat_id, message, buttons=get_main_menu_buttons())
-
-    return item.id
+    db.refresh(event)
+    return event
 
 
 
