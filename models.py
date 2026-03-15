@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text, create_engine
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text, create_engine
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
 import config
@@ -26,102 +26,47 @@ class Client(Base):
     referral_code = Column(String(64), unique=True, nullable=False, index=True)
     referred_by_id = Column(Integer, ForeignKey("clients.id"), nullable=True)
 
-    loyalty_level = Column(String(32), nullable=False, default="BRONZE")
-    total_spent_last_period = Column(Float, nullable=False, default=0.0)
-
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
     referred_by = relationship("Client", remote_side=[id])
 
-    policies = relationship(
-        "Policy",
-        foreign_keys="Policy.client_id",
-        back_populates="client",
-        cascade="all, delete-orphan",
+    referrals_sent = relationship(
+        "ReferralEvent",
+        foreign_keys="ReferralEvent.inviter_client_id",
+        back_populates="inviter_client",
     )
 
-    bonuses = relationship(
-        "BonusLedger",
-        back_populates="client",
-        cascade="all, delete-orphan",
+    referrals_received = relationship(
+        "ReferralEvent",
+        foreign_keys="ReferralEvent.referred_client_id",
+        back_populates="referred_client",
     )
 
 
-class Policy(Base):
-    __tablename__ = "policies"
+class ReferralEvent(Base):
+    __tablename__ = "referral_events"
 
     id = Column(Integer, primary_key=True)
-    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    inviter_client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    referred_client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
 
-    policy_type = Column(String(64), nullable=False, index=True)
-    premium_amount = Column(Float, nullable=False)
-
-    start_date = Column(DateTime, nullable=False)
-    end_date = Column(DateTime, nullable=False)
-
-    status = Column(String(32), nullable=False, default="ACTIVE")
-
-    referral_source_client_id = Column(Integer, ForeignKey("clients.id"), nullable=True)
-
-    bonus_rate = Column(Float, nullable=False, default=0.0)
-    bonus_amount = Column(Float, nullable=False, default=0.0)
-
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-
-    client = relationship(
-        "Client",
-        foreign_keys=[client_id],
-        back_populates="policies",
-    )
-
-    referral_source_client = relationship(
-        "Client",
-        foreign_keys=[referral_source_client_id],
-    )
-
-
-class BonusLedger(Base):
-    __tablename__ = "bonus_ledger"
-
-    id = Column(Integer, primary_key=True)
-    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
-
-    amount = Column(Float, nullable=False)
-    entry_type = Column(String(64), nullable=False)
-    description = Column(Text, nullable=False)
-
-    available_from = Column(DateTime, nullable=False, default=datetime.utcnow)
-    expires_at = Column(DateTime, nullable=True)
-
-    policy_id = Column(Integer, ForeignKey("policies.id"), nullable=True)
-    referral_code = Column(String(64), nullable=True)
-
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-
-    client = relationship("Client", back_populates="bonuses")
-
-
-class WithdrawalRequest(Base):
-    __tablename__ = "withdrawal_requests"
-
-    id = Column(Integer, primary_key=True)
-    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
-
-    amount = Column(Float, nullable=False)
     status = Column(String(32), nullable=False, default="PENDING")
+    note = Column(Text, nullable=True)
 
-    requested_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     processed_at = Column(DateTime, nullable=True)
 
+    inviter_client = relationship(
+        "Client",
+        foreign_keys=[inviter_client_id],
+        back_populates="referrals_sent",
+    )
 
-class BroadcastLog(Base):
-    __tablename__ = "broadcast_logs"
-
-    id = Column(Integer, primary_key=True)
-    title = Column(String(255), nullable=False)
-    message = Column(Text, nullable=False)
-    only_with_referrals = Column(Boolean, nullable=False, default=False)
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    referred_client = relationship(
+        "Client",
+        foreign_keys=[referred_client_id],
+        back_populates="referrals_received",
+    )
 
 
 def initialize_db() -> None:
