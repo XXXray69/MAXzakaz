@@ -21,6 +21,8 @@ from bonus_service import (
 )
 from models import Client, get_db, initialize_db
 
+APP_VERSION = "service-request-v2"
+
 app = FastAPI(title="MAX Referral Bot")
 initialize_db()
 
@@ -109,7 +111,6 @@ def handle_owner_action(db: Session, text: str) -> Optional[str]:
             event = approve_referral_event(db, event_id)
 
             inviter = db.get(Client, event.inviter_client_id)
-            referred = db.get(Client, event.referred_client_id)
 
             if inviter:
                 send_max_notification(
@@ -142,7 +143,7 @@ def route_action(client: Client, action: str) -> tuple[str, Optional[list]]:
     if action == "Заказать услугу":
         WAITING_SERVICE_REQUEST.add(client.max_chat_id)
         return (
-            "Отправьте, пожалуйста, свои данные для обратной связи (ФИО, номер телефона).",
+            f"[{APP_VERSION}] Отправьте, пожалуйста, свои данные для обратной связи (ФИО, номер телефона).",
             None,
         )
 
@@ -160,7 +161,7 @@ def route_action(client: Client, action: str) -> tuple[str, Optional[list]]:
 
 @app.get("/")
 def root():
-    return {"status": "ok", "service": "MAX referral bot"}
+    return {"status": "ok", "service": "MAX referral bot", "version": APP_VERSION}
 
 
 @app.post("/webhook")
@@ -211,23 +212,6 @@ def webhook(
         send_max_notification(target_id, owner_result, buttons=get_main_menu_buttons())
         return {"status": "ok", "kind": "owner_action"}
 
-    if client.max_chat_id in WAITING_SERVICE_REQUEST and text not in {"/start", "start", "Заказать услугу", "Реферальная программа"}:
-        WAITING_SERVICE_REQUEST.discard(client.max_chat_id)
-
-        notify_owner(
-            f"Новая заявка на услугу.\n"
-            f"Клиент: {client.name}\n"
-            f"user_id: {client.max_chat_id}\n"
-            f"Сообщение клиента: {text}"
-        )
-
-        send_max_notification(
-            client.max_chat_id,
-            "Спасибо за обращение! Наш менеджер свяжется с вами в ближайшее время.",
-            buttons=get_main_menu_buttons(),
-        )
-        return {"status": "ok", "kind": "service_request_sent"}
-
     if start_payload and client.referred_by_id:
         inviter = db.get(Client, client.referred_by_id)
         if inviter:
@@ -251,6 +235,43 @@ def webhook(
             buttons=get_main_menu_buttons(),
         )
         return {"status": "ok", "kind": "referral_start"}
+
+    if client.max_chat_id in WAITING_SERVICE_REQUEST:
+        if text in {"/start", "start"}:
+            WAITING_SERVICE_REQUEST.discard(client.max_chat_id)
+            reply, buttons = route_action(client, "/start")
+            send_max_notification(target_id, reply, buttons=buttons)
+            return {"status": "ok", "kind": "reset_to_start"}
+
+        if text == "Заказать услугу":
+            send_max_notification(
+                target_id,
+                f"[{APP_VERSION}] Отправьте, пожалуйста, свои данные для обратной связи (ФИО, номер телефона).",
+                buttons=None,
+            )
+            return {"status": "ok", "kind": "waiting_repeat"}
+
+        if text == "Реферальная программа":
+            WAITING_SERVICE_REQUEST.discard(client.max_chat_id)
+            reply, buttons = route_action(client, "Реферальная программа")
+            send_max_notification(target_id, reply, buttons=buttons)
+            return {"status": "ok", "kind": "switch_to_referral"}
+
+        WAITING_SERVICE_REQUEST.discard(client.max_chat_id)
+
+        notify_owner(
+            f"Новая заявка на услугу.\n"
+            f"Клиент: {client.name}\n"
+            f"user_id: {client.max_chat_id}\n"
+            f"Сообщение клиента: {text}"
+        )
+
+        send_max_notification(
+            client.max_chat_id,
+            "Спасибо за обращение! Наш менеджер свяжется с вами в ближайшее время.",
+            buttons=get_main_menu_buttons(),
+        )
+        return {"status": "ok", "kind": "service_request_sent"}
 
     reply, buttons = route_action(client, text or "/start")
     send_max_notification(target_id, reply, buttons=buttons)
