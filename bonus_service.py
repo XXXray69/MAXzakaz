@@ -13,7 +13,7 @@ from models import Client, ReferralEvent
 
 def _max_headers() -> dict:
     return {
-        "Authorization": config.MAX_BOT_TOKEN,
+        "Authorization": config.MAX_BOT_TOKEN.strip(),
         "Content-Type": "application/json",
     }
 
@@ -40,7 +40,7 @@ def send_max_notification(max_user_id: str, message: str, buttons: Optional[list
         response = requests.post(
             f"{config.MAX_API_BASE}/messages",
             headers=_max_headers(),
-            params={"user_id": max_user_id},
+            params={"user_id": str(max_user_id)},
             json=body,
             timeout=20,
         )
@@ -109,7 +109,7 @@ def get_or_create_client(
     name: str = "Unknown",
     referral_code: Optional[str] = None,
 ) -> Client:
-    client = db.query(Client).filter(Client.max_chat_id == max_chat_id).first()
+    client = db.query(Client).filter(Client.max_chat_id == str(max_chat_id)).first()
     if client:
         if name and client.name != name:
             client.name = name
@@ -128,7 +128,7 @@ def get_or_create_client(
             referred_by_id = inviter.id
 
     client = Client(
-        max_chat_id=max_chat_id,
+        max_chat_id=str(max_chat_id),
         name=name or "Unknown",
         referral_code=code,
         referred_by_id=referred_by_id,
