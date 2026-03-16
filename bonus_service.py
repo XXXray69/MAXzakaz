@@ -13,7 +13,7 @@ from models import Client, ReferralEvent
 
 def _max_headers() -> dict:
     return {
-        "Authorization": config.MAX_BOT_TOKEN.strip(),
+        "Authorization": config.MAX_BOT_TOKEN,
         "Content-Type": "application/json",
     }
 
