@@ -28,20 +28,14 @@ WAITING_SERVICE_REQUEST: set[str] = set()
 
 
 def _extract_text_from_message(message: dict[str, Any]) -> str:
-    candidates = [
-        message.get("text"),
-        message.get("payload"),
-        (message.get("body") or {}).get("text"),
-        (message.get("body") or {}).get("payload"),
-        (message.get("message") or {}).get("text"),
-        (message.get("message") or {}).get("payload"),
-    ]
-
-    for value in candidates:
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-
-    return ""
+    body = message.get("body") or {}
+    return (
+        message.get("text")
+        or body.get("text")
+        or message.get("payload")
+        or body.get("payload")
+        or ""
+    ).strip()
 
 
 def extract_message_data(payload: dict[str, Any]) -> tuple[str, str, str, Optional[str]]:
@@ -49,13 +43,13 @@ def extract_message_data(payload: dict[str, Any]) -> tuple[str, str, str, Option
 
     if update_type == "bot_started":
         user = payload.get("user") or {}
-        target_id = str(
-            user.get("user_id")
-            or payload.get("chat_id")
-            or payload.get("user_id")
-            or ""
+        target_id = str(user.get("user_id") or payload.get("chat_id") or payload.get("user_id") or "")
+        user_name = (
+            user.get("name")
+            or f"{user.get('first_name', '')} {user.get('last_name', '')}".strip()
+            or user.get("username")
+            or "Unknown"
         )
-        user_name = user.get("name") or user.get("username") or "Unknown"
         text = "/start"
         start_payload = payload.get("payload")
         return target_id, user_name, text, start_payload
@@ -70,12 +64,15 @@ def extract_message_data(payload: dict[str, Any]) -> tuple[str, str, str, Option
         or payload.get("user_id")
         or ""
     )
-    user_name = sender.get("name") or sender.get("username") or "Unknown"
+
+    user_name = (
+        sender.get("name")
+        or f"{sender.get('first_name', '')} {sender.get('last_name', '')}".strip()
+        or sender.get("username")
+        or "Unknown"
+    )
 
     text = _extract_text_from_message(message)
-    if not text and isinstance(payload.get("text"), str):
-        text = payload.get("text", "").strip()
-
     return target_id, user_name, text, None
 
 
@@ -86,13 +83,13 @@ def extract_callback_data(payload: dict[str, Any]) -> tuple[str, str, str, str]:
 
     callback_id = str(callback.get("callback_id") or "")
     callback_payload = str(callback.get("payload") or "")
-    target_id = str(
-        sender.get("user_id")
-        or message.get("user_id")
-        or message.get("chat_id")
-        or ""
+    target_id = str(sender.get("user_id") or message.get("user_id") or message.get("chat_id") or "")
+    user_name = (
+        sender.get("name")
+        or f"{sender.get('first_name', '')} {sender.get('last_name', '')}".strip()
+        or sender.get("username")
+        or "Unknown"
     )
-    user_name = sender.get("name") or sender.get("username") or "Unknown"
 
     return callback_id, callback_payload, target_id, user_name
 
@@ -121,11 +118,7 @@ def handle_owner_action(db: Session, text: str) -> Optional[str]:
                     buttons=get_main_menu_buttons(),
                 )
 
-            return (
-                f"Реферальное обращение #{event.id} подтверждено.\n"
-                f"Пригласивший: {inviter.name if inviter else '-'}\n"
-                f"Реферальный друг: {referred.name if referred else '-'}"
-            )
+            return f"Реферальное обращение #{event.id} подтверждено."
         except Exception as exc:
             return f"Ошибка подтверждения: {exc}"
 
@@ -133,21 +126,14 @@ def handle_owner_action(db: Session, text: str) -> Optional[str]:
         try:
             event_id = int(text.split(" ", 1)[1].strip())
             event = cancel_referral_event(db, event_id)
-            inviter = db.get(Client, event.inviter_client_id)
-            referred = db.get(Client, event.referred_client_id)
-
-            return (
-                f"Реферальное обращение #{event.id} отменено.\n"
-                f"Пригласивший: {inviter.name if inviter else '-'}\n"
-                f"Реферальный друг: {referred.name if referred else '-'}"
-            )
+            return f"Реферальное обращение #{event.id} отменено."
         except Exception as exc:
             return f"Ошибка отмены: {exc}"
 
     return None
 
 
-def route_action(db: Session, client: Client, action: str) -> tuple[str, list]:
+def route_action(client: Client, action: str) -> tuple[str, Optional[list]]:
     action = (action or "").strip()
 
     if action in {"/start", "start"}:
@@ -157,7 +143,7 @@ def route_action(db: Session, client: Client, action: str) -> tuple[str, list]:
         WAITING_SERVICE_REQUEST.add(client.max_chat_id)
         return (
             "Отправьте, пожалуйста, свои данные для обратной связи (ФИО, номер телефона).",
-            [],
+            None,
         )
 
     if action == "Реферальная программа":
@@ -205,12 +191,12 @@ def webhook(
             send_max_notification(target_id, owner_result, buttons=get_main_menu_buttons())
             return {"status": "ok", "kind": "owner_callback"}
 
-        reply, buttons = route_action(db, client, callback_payload)
+        reply, buttons = route_action(client, callback_payload)
 
         if callback_id:
             answer_callback(callback_id, "Принято")
 
-        send_max_notification(target_id, reply, buttons=buttons or None)
+        send_max_notification(target_id, reply, buttons=buttons)
         return {"status": "ok", "kind": "callback"}
 
     target_id, user_name, text, start_payload = extract_message_data(payload)
@@ -232,7 +218,7 @@ def webhook(
             f"Новая заявка на услугу.\n"
             f"Клиент: {client.name}\n"
             f"user_id: {client.max_chat_id}\n"
-            f"Данные от клиента: {text}"
+            f"Сообщение клиента: {text}"
         )
 
         send_max_notification(
@@ -244,17 +230,18 @@ def webhook(
 
     if start_payload and client.referred_by_id:
         inviter = db.get(Client, client.referred_by_id)
-        event = create_referral_event(db, inviter.id, client.id)
+        if inviter:
+            event = create_referral_event(db, inviter.id, client.id)
 
-        notify_owner(
-            f"Пользователь воспользовался реферальной программой.\n"
-            f"Новый пользователь: {client.name}\n"
-            f"user_id: {client.max_chat_id}\n"
-            f"Пригласил: {inviter.name}\n"
-            f"inviter_user_id: {inviter.max_chat_id}\n"
-            f"Событие ID: {event.id}",
-            buttons=get_owner_referral_buttons(event.id),
-        )
+            notify_owner(
+                f"Пользователь воспользовался реферальной программой.\n"
+                f"Новый пользователь: {client.name}\n"
+                f"user_id: {client.max_chat_id}\n"
+                f"Пригласил: {inviter.name}\n"
+                f"inviter_user_id: {inviter.max_chat_id}\n"
+                f"Событие ID: {event.id}",
+                buttons=get_owner_referral_buttons(event.id),
+            )
 
         send_max_notification(
             client.max_chat_id,
@@ -265,8 +252,8 @@ def webhook(
         )
         return {"status": "ok", "kind": "referral_start"}
 
-    reply, buttons = route_action(db, client, text or "/start")
-    send_max_notification(target_id, reply, buttons=buttons or None)
+    reply, buttons = route_action(client, text or "/start")
+    send_max_notification(target_id, reply, buttons=buttons)
 
     return {"status": "ok", "kind": "message"}
 
