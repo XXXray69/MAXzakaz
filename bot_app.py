@@ -19,10 +19,12 @@ from bonus_service import (
     notify_owner,
     send_max_notification,
 )
-from models import Client, ReferralEvent, get_db, initialize_db
+from models import Client, get_db, initialize_db
 
 app = FastAPI(title="MAX Referral Bot")
 initialize_db()
+
+WAITING_SERVICE_REQUEST: set[str] = set()
 
 
 def _extract_text_from_message(message: dict[str, Any]) -> str:
@@ -152,15 +154,10 @@ def route_action(db: Session, client: Client, action: str) -> tuple[str, list]:
         return welcome_text(client.name), get_main_menu_buttons()
 
     if action == "Заказать услугу":
-        notify_owner(
-            f"Новая заявка на услугу.\n"
-            f"Клиент: {client.name}\n"
-            f"user_id: {client.max_chat_id}\n"
-            f"Действие: Заказать услугу"
-        )
+        WAITING_SERVICE_REQUEST.add(client.max_chat_id)
         return (
-            "Спасибо за обращение! Наш менеджер свяжется с вами в ближайшее время.",
-            get_main_menu_buttons(),
+            "Отправьте, пожалуйста, свои данные для обратной связи (ФИО, номер телефона).",
+            [],
         )
 
     if action == "Реферальная программа":
@@ -202,8 +199,9 @@ def webhook(
         client = get_or_create_client(db, target_id, user_name)
 
         owner_result = handle_owner_action(db, callback_payload)
-        if owner_result and callback_id:
-            answer_callback(callback_id, "Принято")
+        if owner_result:
+            if callback_id:
+                answer_callback(callback_id, "Принято")
             send_max_notification(target_id, owner_result, buttons=get_main_menu_buttons())
             return {"status": "ok", "kind": "owner_callback"}
 
@@ -212,7 +210,7 @@ def webhook(
         if callback_id:
             answer_callback(callback_id, "Принято")
 
-        send_max_notification(target_id, reply, buttons=buttons)
+        send_max_notification(target_id, reply, buttons=buttons or None)
         return {"status": "ok", "kind": "callback"}
 
     target_id, user_name, text, start_payload = extract_message_data(payload)
@@ -227,7 +225,23 @@ def webhook(
         send_max_notification(target_id, owner_result, buttons=get_main_menu_buttons())
         return {"status": "ok", "kind": "owner_action"}
 
-    # Новый пользователь пришёл по реферальной ссылке
+    if client.max_chat_id in WAITING_SERVICE_REQUEST and text not in {"/start", "start", "Заказать услугу", "Реферальная программа"}:
+        WAITING_SERVICE_REQUEST.discard(client.max_chat_id)
+
+        notify_owner(
+            f"Новая заявка на услугу.\n"
+            f"Клиент: {client.name}\n"
+            f"user_id: {client.max_chat_id}\n"
+            f"Данные от клиента: {text}"
+        )
+
+        send_max_notification(
+            client.max_chat_id,
+            "Спасибо за обращение! Наш менеджер свяжется с вами в ближайшее время.",
+            buttons=get_main_menu_buttons(),
+        )
+        return {"status": "ok", "kind": "service_request_sent"}
+
     if start_payload and client.referred_by_id:
         inviter = db.get(Client, client.referred_by_id)
         event = create_referral_event(db, inviter.id, client.id)
@@ -252,7 +266,7 @@ def webhook(
         return {"status": "ok", "kind": "referral_start"}
 
     reply, buttons = route_action(db, client, text or "/start")
-    send_max_notification(target_id, reply, buttons=buttons)
+    send_max_notification(target_id, reply, buttons=buttons or None)
 
     return {"status": "ok", "kind": "message"}
 
