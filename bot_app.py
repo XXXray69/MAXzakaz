@@ -109,7 +109,6 @@ def handle_owner_action(db: Session, text: str) -> Optional[str]:
         try:
             event_id = int(text.split(" ", 1)[1].strip())
             event = approve_referral_event(db, event_id)
-
             inviter = db.get(Client, event.inviter_client_id)
 
             if inviter:
@@ -143,7 +142,7 @@ def route_action(client: Client, action: str) -> tuple[str, Optional[list]]:
     if action == "Заказать услугу":
         WAITING_SERVICE_REQUEST.add(client.max_chat_id)
         return (
-            f"[{APP_VERSION}] Отправьте, пожалуйста, свои данные для обратной связи (ФИО, номер телефона).",
+            "Отправьте, пожалуйста, свои данные для обратной связи (ФИО, номер телефона).",
             None,
         )
 
@@ -246,7 +245,7 @@ def webhook(
         if text == "Заказать услугу":
             send_max_notification(
                 target_id,
-                f"[{APP_VERSION}] Отправьте, пожалуйста, свои данные для обратной связи (ФИО, номер телефона).",
+                "Отправьте, пожалуйста, свои данные для обратной связи (ФИО, номер телефона).",
                 buttons=None,
             )
             return {"status": "ok", "kind": "waiting_repeat"}
