@@ -21,18 +21,22 @@ class Client(Base):
     __tablename__ = "clients"
 
     id = Column(Integer, primary_key=True)
+
     max_chat_id = Column(String(128), unique=True, nullable=False, index=True)
     name = Column(String(255), nullable=False, default="Unknown")
     referral_code = Column(String(64), unique=True, nullable=False, index=True)
 
     referred_by_id = Column(Integer, ForeignKey("clients.id"), nullable=True)
-    referral_locked = Column(Boolean, nullable=False, default=False)  # уже закреплён за первым реферером
-    discount_request_used = Column(Boolean, nullable=False, default=False)  # уже нажимал "Хочу скидку"
+    referral_locked = Column(Boolean, nullable=False, default=False)
+    discount_request_used = Column(Boolean, nullable=False, default=False)
     balance = Column(Float, nullable=False, default=0.0)
 
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
-    referred_by = relationship("Client", remote_side=[id])
+    referred_by = relationship(
+        "Client",
+        remote_side=[id],
+    )
 
     invited_events = relationship(
         "ReferralEvent",
@@ -46,7 +50,11 @@ class Client(Base):
         back_populates="referred_client",
     )
 
-    requests = relationship("ServiceRequest", back_populates="client")
+    requests = relationship(
+        "ServiceRequest",
+        foreign_keys="ServiceRequest.client_id",
+        back_populates="client",
+    )
 
 
 class ReferralEvent(Base):
@@ -68,6 +76,7 @@ class ReferralEvent(Base):
         foreign_keys=[inviter_client_id],
         back_populates="invited_events",
     )
+
     referred_client = relationship(
         "Client",
         foreign_keys=[referred_client_id],
@@ -81,7 +90,7 @@ class ServiceRequest(Base):
     id = Column(Integer, primary_key=True)
 
     code = Column(String(32), unique=True, nullable=False, index=True)
-    request_type = Column(String(32), nullable=False)  # DISCOUNT / BONUS_SPEND
+    request_type = Column(String(32), nullable=False)  # SERVICE / DISCOUNT / BONUS_SPEND
 
     client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
     referrer_client_id = Column(Integer, ForeignKey("clients.id"), nullable=True, index=True)
@@ -89,14 +98,23 @@ class ServiceRequest(Base):
     account_name = Column(String(255), nullable=False, default="Unknown")
     client_max_chat_id = Column(String(128), nullable=False)
 
-    contact_text = Column(Text, nullable=False)  # ФИО + телефон
-    bonus_amount = Column(Float, nullable=True)  # сумма награждения или списания
+    contact_text = Column(Text, nullable=False)
+    bonus_amount = Column(Float, nullable=True)
 
     status = Column(String(32), nullable=False, default="PENDING")
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=True)
 
-    client = relationship("Client", foreign_keys=[client_id], back_populates="requests")
+    client = relationship(
+        "Client",
+        foreign_keys=[client_id],
+        back_populates="requests",
+    )
+
+    referrer = relationship(
+        "Client",
+        foreign_keys=[referrer_client_id],
+    )
 
 
 def initialize_db() -> None:
